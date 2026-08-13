@@ -1,0 +1,16 @@
+.gcloudignore
+.git
+.gitignore
+.vscode
+.venv
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+docs/
+*.bak
+*.md
+production_test.py
+auto_fix.py
+EXECUTION_PLAN.md

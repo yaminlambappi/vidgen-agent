@@ -1,0 +1,80 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.so
+
+# C extensions
+*.obj
+*.slo
+*.lo
+*.la
+*.dll
+*.lib
+*.o
+*.a
+*.mod
+*.node
+*.dylib
+
+# Editor stuff
+.vscode/
+
+# Python environment
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.idea/
+.project
+.directory
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+.hypothesis/
+.nox/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.memo
+*.ilc
+*.pyo
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# OS-generated files
+.DS_Store
+.Trashes
+Thumbs.db
+
+# My stuff
+.env
+active_project_id.txt
+project_state.json
+/tmp/vidgen/
+references/
+*.log
