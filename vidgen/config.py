@@ -33,6 +33,8 @@ class Settings:
     MAX_SHOTS = int(os.getenv("MAX_SHOTS", "42"))
     VEO_TIMEOUT_SECONDS = int(os.getenv("VEO_TIMEOUT_SECONDS", "1800"))
     RETRY_ATTEMPTS = int(os.getenv("RETRY_ATTEMPTS", "3"))
+    IMAGE_RETRY_ATTEMPTS = int(os.getenv("IMAGE_RETRY_ATTEMPTS", "8"))
+    IMAGE_REQUEST_DELAY_SECONDS = float(os.getenv("IMAGE_REQUEST_DELAY_SECONDS", "3.0"))
 
     @property
     def is_production(self) -> bool:

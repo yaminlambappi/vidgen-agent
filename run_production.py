@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production runner — Bangladesh Digital Dreams. Checkpoint-resumable."""
+"""Production runner — Ghost of Ithaca. Checkpoint-resumable."""
 from __future__ import annotations
 import json, sys, time
 from pathlib import Path
@@ -8,23 +8,46 @@ from vidgen.models import FilmProject, FilmStatus
 from vidgen.orchestrator import Orchestrator
 
 TOPIC = (
-    "ODYSSEUS trailer: mythic, emotionally powerful, visually coherent, premium theatrical quality. "
-    "Odysseus has spent years trying to return home after war. The sea, gods, monsters, and his own memories have transformed the journey into a psychological battle. "
-    "The greatest battle is no longer against the sea—it is against what he has become.\n\n"
-    "Use a compact three-act trailer structure:\n"
-    "* 0–8s — Mystery: vast ancient sea, exhausted Odysseus on a damaged ship, haunting atmosphere, restrained dialogue.\n"
-    "* 8–20s — Escalation: rapid but coherent flashes of danger—storm, enormous silhouette beneath the water, warriors/ruins, Odysseus fighting, Penelope/home as an emotional memory.\n"
-    "* 20–30s — Payoff: extreme danger and emotional revelation, decisive final image, then title ODYSSEUS and a powerful final sound/music hit."
+    "GHOST OF ITHACA: A mythic psychological drama for international film festival submission. "
+    "Odysseus returns to Ithaca after twenty years — but the kingdom he finds is not the one he left. "
+    "Penelope has become a stranger guarded by silence. Telemachus bears the weight of a father who is both legend and ghost. "
+    "The island itself seems to remember every betrayal.\n\n"
+    "Three-act structure for a 48-second cinematic short (3 scenes × 2 shots × 8 seconds):\n"
+    "* ACT I — Arrival: Odysseus steps ashore at dawn. The olive groves are unchanged; everything else is foreign. Haunted, restrained atmosphere.\n"
+    "* ACT II — Recognition: Penelope and Telemachus confront the man at the threshold. Memory, doubt, and grief collide. Escalating emotional tension.\n"
+    "* ACT III — The Ghost: Odysseus realizes he cannot fully return — he is changed by the sea, by war, by time. Final image: his silhouette against the Ithacan cliffs as the title GHOST OF ITHACA resolves.\n\n"
+    "Premium theatrical quality. Consistent character identity, wardrobe, and location continuity throughout. "
+    "Cinematic composition, motivated camera movement, controlled lighting, coherent color language, natural dialogue, layered ambience."
 )
 
 STATE_DIR = settings.VIDGEN_WORK_ROOT
 CHECKPOINT = STATE_DIR / "active_project_id.txt"
 
 
+def _restore_from_gcs(orc: Orchestrator, pid: str) -> FilmProject | None:
+    gcs_uri = f"gs://{settings.GCS_BUCKET}/projects/{pid}/state.json"
+    local = STATE_DIR / pid / "project_state.json"
+    if local.exists():
+        return None
+    if not orc.storage.exists(gcs_uri):
+        return None
+    local.parent.mkdir(parents=True, exist_ok=True)
+    orc.storage.download(gcs_uri, str(local))
+    p = FilmProject.model_validate_json(local.read_text())
+    print(f"[GCS RESTORE] {pid} status={p.status.value}")
+    return p
+
+
 def _load_or_new(orc: Orchestrator) -> FilmProject:
     if CHECKPOINT.exists():
         pid = CHECKPOINT.read_text().strip()
         sf = STATE_DIR / pid / "project_state.json"
+        if not sf.exists():
+            restored = _restore_from_gcs(orc, pid)
+            if restored:
+                if restored.status == FilmStatus.FAILED:
+                    restored = _reset(restored)
+                return restored
         if sf.exists():
             p = FilmProject.model_validate_json(sf.read_text())
             print(f"[RESUME] {pid} status={p.status.value}")
@@ -49,6 +72,10 @@ def _reset(p: FilmProject) -> FilmProject:
         safe = FilmStatus.GENERATING
     elif p.scenes:
         safe = FilmStatus.STORYBOARDING
+    elif p.character_bible and p.world_bible:
+        safe = FilmStatus.STORYBOARDING
+    elif p.story:
+        safe = FilmStatus.QUEUED
     else:
         safe = FilmStatus.QUEUED
     print(f"[RESET] scenes={len(p.scenes)} shots={len(shots)} done={n} -> {safe.value}")
@@ -109,11 +136,12 @@ def _run(orc: Orchestrator, p: FilmProject) -> FilmProject:
 
 def main():
     print("="*72)
-    print("VIDGEN — ODYSSEUS Trailer")
+    print("VIDGEN — Ghost of Ithaca")
     print("="*72)
     for k,v in [("project", settings.GOOGLE_CLOUD_PROJECT),
                 ("bucket", settings.GCS_BUCKET),
                 ("veo", settings.VEO_MODEL),
+                ("image", settings.IMAGE_MODEL),
                 ("director", settings.DIRECTOR_MODEL),
                 ("shots/scene", settings.SHOTS_PER_SCENE)]:
         print(f"  {k:<12}: {v}")

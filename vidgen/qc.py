@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from vidgen.agents import BaseAgent
 from google.genai import types
 from vidgen.models import Shot, CinematicBible, Character
+from vidgen.utils.references import resolve_reference_path
 
 class QCMAgent(BaseAgent):
     """
@@ -162,7 +163,7 @@ class QCMAgent(BaseAgent):
         except (json.JSONDecodeError, ValueError):
             return {"continuity_ok": False, "errors": ["Failed to parse model response"]}
 
-    def critique_shot(self, frame_path: str, shot: Shot, cinematic_bible: CinematicBible, prev_frame_path: str = None, prev_shot: Shot = None, characters: List[Character] = None) -> Dict[str, Any]:
+    def critique_shot(self, frame_path: str, shot: Shot, cinematic_bible: CinematicBible, prev_frame_path: str = None, prev_shot: Shot = None, characters: List[Character] = None, storage=None) -> Dict[str, Any]:
         """
         Comprehensive festival-grade critique of a single shot.
         """
@@ -187,8 +188,9 @@ class QCMAgent(BaseAgent):
         # 3. Character Consistency (if applicable)
         if shot.character_ids:
             char = next((c for c in characters if c.character_id == shot.character_ids[0]), None)
-            if char and char.reference_image_path:
-                char_report = self.check_character_consistency(char.reference_image_path, frame_path)
+            ref_path = resolve_reference_path(char, storage) if char and storage else (char.reference_image_path if char else "")
+            if char and ref_path:
+                char_report = self.check_character_consistency(ref_path, frame_path)
                 if not char_report["consistent"]:
                     critique["passed"] = False
                     critique["feedback"].append(f"Character inconsistency for {char.name}. Score: {char_report['score']:.2f}. Note: {char_report.get('note', 'N/A')}")

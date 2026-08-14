@@ -28,6 +28,21 @@ def _cls(e):
     return "transient"
 
 
+def _bible_complete(bible, min_count=3) -> bool:
+    if not bible:
+        return False
+    items = getattr(bible, "characters", None) or getattr(bible, "locations", None) or []
+    if len(items) < min_count:
+        return False
+    for item in items[:min_count]:
+        if getattr(item, "canonical_visual_assets", None):
+            continue
+        if getattr(item, "reference_image_uri", None):
+            continue
+        return False
+    return True
+
+
 class Orchestrator:
     def __init__(self):
         self.storage = get_storage_provider()
@@ -124,7 +139,8 @@ class Orchestrator:
                     cinematic_bible=p.cinematic_bible,
                     prev_frame_path=str(prev_frame_path) if prev_frame_path else None,
                     prev_shot=prev_shot,
-                    characters=p.character_bible.characters if p.character_bible else []
+                    characters=p.character_bible.characters if p.character_bible else [],
+                    storage=self.storage,
                 )
 
                 shot.qc.update(critique)
@@ -147,7 +163,9 @@ class Orchestrator:
                     last_error = f"QC failed: {critique['feedback']}"
                     print(f"  [SHOT {shot.index:02d}] ✗ {last_error}")
                     feedback = self.qcm_agent.generate_feedback_prompt(shot, critique)
-                    # Continue to next attempt with feedback
+                    wait_time = 2 ** attempt + 0.5
+                    print(f"  [SHOT {shot.index:02d}] QC retry in {wait_time:.1f}s")
+                    time.sleep(wait_time)
             else:
                 last_error = job.error or "Generation failed with no URI"
                 ec = _cls(last_error)
@@ -227,24 +245,33 @@ class Orchestrator:
         root = settings.VIDGEN_WORK_ROOT / p.project_id
         root.mkdir(parents=True, exist_ok=True)
         try:
-            # PLANNING
+            # PLANNING (resumable — skip completed bibles and canonical assets)
             if p.status == FilmStatus.QUEUED:
                 self._set(p, FilmStatus.PLANNING, "Research + Story + World + Characters + Cinematics", 5)
-                research = self.researcher.ground(p.topic)
-                (root/"research.md").write_text(research)
-                self.storage.upload(str(root/"research.md"), f"projects/{p.project_id}/research.md")
+                research_path = root / "research.md"
+                if research_path.exists():
+                    research = research_path.read_text()
+                else:
+                    research = self.researcher.ground(p.topic)
+                    research_path.write_text(research)
+                    self.storage.upload(str(research_path), f"projects/{p.project_id}/research.md")
 
-                p.story = self.story_arch.design_story(p.topic, research)
+                if not p.story or not p.story.title:
+                    p.story = self.story_arch.design_story(p.topic, research)
                 print(f"  [STORY] {p.story.title}")
 
-                p.world_bible = self.world_design.design_world(p)
+                if not _bible_complete(p.world_bible):
+                    p.world_bible = self.world_design.design_world(p)
                 print(f"  [WORLD] {len(p.world_bible.locations)} locations")
 
-                p.cinematic_bible = self.cinematog.design_cinematics(p)
+                if not p.cinematic_bible or not p.cinematic_bible.color_palette:
+                    p.cinematic_bible = self.cinematog.design_cinematics(p)
                 print(f"  [CINE] palette={p.cinematic_bible.color_palette[:60]}")
 
-                p.character_bible = self.char_design.design_characters(p)
+                if not _bible_complete(p.character_bible):
+                    p.character_bible = self.char_design.design_characters(p)
                 print(f"  [CHARS] {[c.name for c in p.character_bible.characters]}")
+                self.checkpoint(p)
 
                 self._set(p, FilmStatus.STORYBOARDING, "Screenplay + Storyboard", 20)
 

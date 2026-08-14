@@ -18,6 +18,7 @@ from vidgen.models import (
 )
 from vidgen.providers.image import GeminiImageGenerator
 from vidgen.providers import get_storage_provider
+from vidgen.utils.references import ensure_character_reference, ensure_location_reference
 
 _DET = ("400","404","403","invalid_argument","unsupported","not found",
         "does not have access","unauthenticated","permission denied")
@@ -116,28 +117,14 @@ class CharacterDesignAgent(BaseAgent):
         
         image_generator = GeminiImageGenerator()
         storage = get_storage_provider()
-        references_dir = Path("references")
-        references_dir.mkdir(exist_ok=True)
-        
+
         for char in r.characters:
             prompt = (
                 f"CINEMATIC HEADSHOT. Photorealistic, 8k, detailed. A character for a film. "
                 f"Name: {char.name}. PHYSICALITY: {char.physical_description}. WARDROBE: {char.wardrobe}. "
                 "The image must be a striking, emotionally resonant portrait with dramatic lighting, suitable as a reference for a high-end film production."
             )
-            image_bytes = image_generator.generate(prompt)
-            if image_bytes:
-                image_path = references_dir / f"character_{char.character_id}.png"
-                image_path.write_bytes(image_bytes)
-                char.reference_image_path = str(image_path)
-
-                # Upload to GCS and save URI
-                gcs_path = f"projects/{p.project_id}/references/character_{char.character_id}.png"
-                char.reference_image_uri = storage.upload(str(image_path), gcs_path)
-                char.canonical_visual_assets = [AssetReference(
-                    asset_type=AssetType.IMAGE, uri=char.reference_image_uri,
-                    metadata={"role": "character_identity", "character_id": char.character_id,
-                              "mime_type": "image/png"})]
+            ensure_character_reference(char, p.project_id, storage, image_generator, prompt)
 
         return CharacterBible(characters=r.characters[:3])
 
@@ -162,23 +149,12 @@ class WorldDesignAgent(BaseAgent):
         locations = r.locations[:3]
         image_generator = GeminiImageGenerator()
         storage = get_storage_provider()
-        references_dir = Path("references")
-        references_dir.mkdir(exist_ok=True)
         for loc in locations:
             prompt = ("CANONICAL LOCATION REFERENCE, photorealistic cinematic production-design still. "
                       f"LOCATION: {loc.name}. {loc.description}. TIME: {loc.time_of_day}. "
                       f"LIGHTING: {loc.lighting}. RECURRING PROPS: {', '.join(loc.recurring_props)}. "
                       "No people, no text, no logos. Preserve this exact geography and props in every shot.")
-            image_bytes = image_generator.generate(prompt)
-            if not image_bytes:
-                raise RuntimeError(f"No canonical image returned for location {loc.name}")
-            image_path = references_dir / f"location_{loc.location_id}.png"
-            image_path.write_bytes(image_bytes)
-            uri = storage.upload(str(image_path), f"projects/{p.project_id}/references/location_{loc.location_id}.png")
-            loc.canonical_visual_assets = [AssetReference(
-                asset_type=AssetType.IMAGE, uri=uri,
-                metadata={"role": "location_identity", "location_id": loc.location_id,
-                          "mime_type": "image/png"})]
+            ensure_location_reference(loc, p.project_id, storage, image_generator, prompt)
         return WorldBible(locations=locations)
 
 
