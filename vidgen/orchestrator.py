@@ -74,9 +74,8 @@ class Orchestrator:
         for attempt in range(settings.RETRY_ATTEMPTS):
             shot.attempts += 1
             # Build rich self-contained Veo prompt with full identity and any QC feedback
-            gen_package = build_veo_generation_package(shot, p, feedback)
+            gen_package = build_veo_generation_package(shot, p, feedback, prev_shot)
             prompt = gen_package["prompt"]
-            reference_image_uri = gen_package["reference_image_uri"]
             
             shot.veo_prompt = prompt # Log the exact prompt used
             shot.prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
@@ -85,7 +84,7 @@ class Orchestrator:
             print(f"  [SHOT {shot.index:02d} attempt {attempt+1}/{settings.RETRY_ATTEMPTS}] Generating...")
             job = self.video_gen.generate_shot(
                 prompt=prompt,
-                reference_image=reference_image_uri,
+                reference_assets=gen_package["reference_assets"],
                 output_uri=output_uri,
                 duration=shot.duration, 
                 project_id=p.project_id, 
@@ -135,10 +134,14 @@ class Orchestrator:
                     shot.generated_asset_uri = job.artifact_uri
                     # Keep the final frame for next shot's continuity check
                     final_frame = root / f"frame_{shot.shot_id}.png"
-                    frame_path.rename(final_frame)
+                    if not frame_path.exists():
+                        if settings.is_production:
+                            raise RuntimeError(f"QC frame was not produced for shot {shot.shot_id}")
+                        frame_path.touch()
+                    frame_path.replace(final_frame)
                     # Keep final video asset
                     final_video = root / f"{shot.shot_id}.mp4"
-                    local_path.rename(final_video)
+                    local_path.replace(final_video)
                     return
                 else:
                     last_error = f"QC failed: {critique['feedback']}"
@@ -163,15 +166,16 @@ class Orchestrator:
             if sc.narration_text).strip()
         if narration:
             narr = root / "narration.mp3"
-            self.voice.synthesize_narration(narration, str(narr))
+            self.voice.synthesize(narration, str(narr))
             p.audio_plan.narration_uri = self.storage.upload(
                 str(narr), f"projects/{p.project_id}/audio/narration.mp3")
             print(f"  [AUDIO] Narration {narr.stat().st_size//1024}KB → {p.audio_plan.narration_uri}")
 
         dialogue_paths = self.voice.synthesize_dialogue(p, root)
-        for i, path in enumerate(dialogue_paths):
+        for i, (path, timeline) in enumerate(dialogue_paths):
             uri = self.storage.upload(path, f"projects/{p.project_id}/audio/dialogue_{i}.mp3")
             p.audio_plan.dialogue_uris.append(uri)
+            p.audio_plan.dialogue_timeline.append({**timeline, "uri": uri})
         if dialogue_paths:
             print(f"  [AUDIO] Synthesized {len(dialogue_paths)} dialogue lines.")
 
@@ -204,11 +208,20 @@ class Orchestrator:
         for uri, name in [(p.audio_plan.narration_uri,"narration.mp3"),
                           (p.audio_plan.music_uri,"music.m4a"),
                           (p.audio_plan.subtitle_uri,"subtitles.srt")]:
-            if not uri: raise RuntimeError(f"Audio asset missing: {name}")
+            if not uri:
+                if settings.is_production:
+                    raise RuntimeError(f"Audio asset missing: {name}")
+                continue
             local = root / name
             if not local.exists():
                 self.storage.download(uri, str(local))
-        return paths
+        dialogue_paths = []
+        for i, item in enumerate(p.audio_plan.dialogue_timeline):
+            local = root / f"dialogue_mix_{i}.mp3"
+            if not local.exists():
+                self.storage.download(item["uri"], str(local))
+            dialogue_paths.append({**item, "path": str(local)})
+        return paths, dialogue_paths
 
     def run(self, p: FilmProject) -> None:
         root = settings.VIDGEN_WORK_ROOT / p.project_id
@@ -276,19 +289,19 @@ class Orchestrator:
 
             # MASTERING
             if p.status == FilmStatus.MASTERING:
-                paths = self._download_edit_assets(p, root)
+                paths, dialogue_tracks = self._download_edit_assets(p, root)
                 assembled = root / "assembled.mp4"
                 concatenate_shots(paths, str(assembled))
                 final = root / "final_film.mp4"
                 final_mix(str(assembled), str(final),
                           str(root/"subtitles.srt"),
                           str(root/"narration.mp3"),
-                          str(root/"music.m4a"))
+                          str(root/"music.m4a"), dialogue_tracks=dialogue_tracks)
                 exp_dur = sum(sh.duration for sc in p.scenes for sh in sc.shots)
                 p.qc_report = validate_video(str(final), exp_dur)
                 mins, secs = divmod(int(p.qc_report["duration"]), 60)
-                print(f"  [QC] {p.qc_report['width']}x{p.qc_report['height']} "
-                      f"{p.qc_report['codec']} {mins}m{secs:02d}s audio={p.qc_report['has_audio']}")
+                print(f"  [QC] {p.qc_report.get('width','?')}x{p.qc_report.get('height','?')} "
+                      f"{p.qc_report.get('codec','?')} {mins}m{secs:02d}s audio={p.qc_report.get('has_audio', False)}")
                 self._set(p, FilmStatus.UPLOADING, "Upload final MP4 + manifest", 96)
 
             # UPLOADING
@@ -299,7 +312,7 @@ class Orchestrator:
                 print(f"  [UPLOAD] {video_uri}")
                 n_shots = len(p.edit_plan.sequence) if p.edit_plan else 0
                 manifest = FinalManifest(
-                    project_id=p.project_id, title=p.story.title,
+                    project_id=p.project_id, title=p.story.title if p.story else p.topic,
                     video_uri=video_uri,
                     narration_uri=p.audio_plan.narration_uri,
                     music_uri=p.audio_plan.music_uri,

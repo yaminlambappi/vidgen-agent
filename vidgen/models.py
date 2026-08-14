@@ -50,6 +50,7 @@ class Location(BaseModel):
     lighting: str = ""
     atmosphere: str = ""
     recurring_props: List[str] = Field(default_factory=list)
+    canonical_visual_assets: List[AssetReference] = Field(default_factory=list)
 
 class WorldBible(BaseModel):
     locations: List[Location] = Field(default_factory=list)
@@ -78,6 +79,10 @@ class Shot(BaseModel):
     atmosphere: str = ""
     character_ids: List[str] = Field(default_factory=list)
     emotional_direction: str = ""
+    performance_objective: str = ""
+    performance_subtext: str = ""
+    physical_behavior: str = ""
+    eyelines: str = ""
     sound: str = ""
     transition: str = ""
     veo_prompt: str = ""
@@ -116,6 +121,7 @@ class AudioPlan(BaseModel):
     music_uri: str = ""
     subtitle_uri: str = ""
     dialogue_uris: List[str] = Field(default_factory=list)
+    dialogue_timeline: List[Dict[str, Any]] = Field(default_factory=list)
 
 class MusicPlan(BaseModel):
     mood: str = ""

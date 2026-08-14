@@ -19,7 +19,7 @@ class Settings:
     GCS_BUCKET = os.getenv("GCS_BUCKET", "vidgen-media-assets")
 
     # veo-3.1-generate-001 confirmed on vidgen-504817 / us-central1
-    VEO_MODEL = os.getenv("VEO_MODEL", "veo-2.0-generate-001")
+    VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-generate-001")
     DIRECTOR_MODEL = os.getenv("DIRECTOR_MODEL", "gemini-2.5-flash")
     IMAGE_MODEL = os.getenv("IMAGE_MODEL", "imagen-3.0-generate-002")
     TTS_VOICE = os.getenv("TTS_VOICE", "en-US-Neural2-J")

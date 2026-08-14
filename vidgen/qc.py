@@ -1,6 +1,7 @@
 """Quality Control Agents"""
 from __future__ import annotations
 import json
+from pathlib import Path
 from typing import Any, Dict, List
 from vidgen.agents import BaseAgent
 from google.genai import types
@@ -20,8 +21,7 @@ class QCMAgent(BaseAgent):
             return {"consistent": True, "score": 1.0, "note": "No reference image provided."}
 
         prompt = [
-            types.Part.from_uri(uri=reference_image_path, mime_type="image/png"),
-            types.Part.from_uri(uri=generated_image_path, mime_type="image/png"),
+            self._image_part(reference_image_path), self._image_part(generated_image_path),
             "You are a meticulous film festival judge. Is this the same person? Scrutinize facial structure, unique features, and overall appearance. Ignore minor lighting or expression changes. Respond with JSON: {\"consistent\": boolean, \"score\": float (0.0-1.0 confidence), \"note\": \"brief justification\"}.",
         ]
         
@@ -51,7 +51,7 @@ class QCMAgent(BaseAgent):
         Scans for common AI-generated visual artifacts.
         """
         prompt = [
-            types.Part.from_uri(uri=generated_image_path, mime_type="image/png"),
+            self._image_part(generated_image_path),
             "You are a ruthless QC inspector for a high-end film. Analyze this frame for any visual artifacts: jitter, unnatural morphing, object instability, mangled hands/faces, or other AI-related glitches. Be highly critical. Respond with JSON: {\"artifact_free\": boolean, \"issues\": [\"list of detected issues\"]}.",
         ]
         
@@ -95,7 +95,7 @@ class QCMAgent(BaseAgent):
         )
 
         contents = [
-            types.Part.from_uri(uri=generated_image_path, mime_type="image/png"),
+            self._image_part(generated_image_path),
             prompt
         ]
         
@@ -138,8 +138,7 @@ class QCMAgent(BaseAgent):
         )
 
         contents = [
-            types.Part.from_uri(uri=frame1_path, mime_type="image/png"),
-            types.Part.from_uri(uri=frame2_path, mime_type="image/png"),
+            self._image_part(frame1_path), self._image_part(frame2_path),
             continuity_prompt
         ]
 
@@ -220,3 +219,7 @@ class QCMAgent(BaseAgent):
              feedback_instruction += "- CRITICAL: Adhere strictly to the established cinematic bible for color, lighting, and texture.\n"
 
         return feedback_instruction
+    @staticmethod
+    def _image_part(path: str):
+        path_obj = Path(path)
+        return types.Part.from_bytes(data=path_obj.read_bytes(), mime_type="image/png")

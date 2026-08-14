@@ -120,6 +120,15 @@ def check_image() -> bool:
 
         for model in chain:
             try:
+                if model.startswith("imagen-"):
+                    r = client.models.generate_images(
+                        model=model, prompt="A solid blue square, no text.",
+                        config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="1:1", output_mime_type="image/png"))
+                    if any(getattr(getattr(image, "image", image), "image_bytes", None)
+                           for image in (getattr(r, "generated_images", None) or [])):
+                        _ok(f"Image({model})")
+                        return True
+                    continue
                 cfg = types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"],
                     temperature=0.4,

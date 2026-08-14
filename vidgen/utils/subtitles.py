@@ -15,5 +15,4 @@ def generate_srt(scenes: List[Scene], total_duration: float) -> str:
                       sc.narration_text.strip(), ""]
             idx += 1
         t += dur
-    return "
-".join(lines)
+    return "\n".join(lines)

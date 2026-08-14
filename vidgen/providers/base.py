@@ -12,6 +12,7 @@ class VideoGenerator(ABC):
         duration: int,
         project_id: str,
         shot_id: str,
+        reference_assets: List[dict] | None = None,
     ) -> GenerationJob:
         pass
 

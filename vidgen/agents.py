@@ -14,10 +14,10 @@ from pydantic import BaseModel
 from vidgen.config import settings
 from vidgen.models import (
     FilmProject, StorySpec, CharacterBible, WorldBible, CinematicBible,
-    Scene, Shot, MusicPlan, EditPlan, Character, Location,
+    Scene, Shot, MusicPlan, EditPlan, Character, Location, AssetReference, AssetType,
 )
 from vidgen.providers.image import GeminiImageGenerator
-from vidgen.providers.storage import get_storage_provider
+from vidgen.providers import get_storage_provider
 
 _DET = ("400","404","403","invalid_argument","unsupported","not found",
         "does not have access","unauthenticated","permission denied")
@@ -134,6 +134,10 @@ class CharacterDesignAgent(BaseAgent):
                 # Upload to GCS and save URI
                 gcs_path = f"projects/{p.project_id}/references/character_{char.character_id}.png"
                 char.reference_image_uri = storage.upload(str(image_path), gcs_path)
+                char.canonical_visual_assets = [AssetReference(
+                    asset_type=AssetType.IMAGE, uri=char.reference_image_uri,
+                    metadata={"role": "character_identity", "character_id": char.character_id,
+                              "mime_type": "image/png"})]
 
         return CharacterBible(characters=r.characters[:3])
 
@@ -155,7 +159,27 @@ class WorldDesignAgent(BaseAgent):
             "- recurring_props: A list of 3-5 specific, significant props that characters interact with.",
             "You are a production designer. Return JSON. Descriptions must be cinematic and charged with meaning.",
             Out)
-        return WorldBible(locations=r.locations[:3])
+        locations = r.locations[:3]
+        image_generator = GeminiImageGenerator()
+        storage = get_storage_provider()
+        references_dir = Path("references")
+        references_dir.mkdir(exist_ok=True)
+        for loc in locations:
+            prompt = ("CANONICAL LOCATION REFERENCE, photorealistic cinematic production-design still. "
+                      f"LOCATION: {loc.name}. {loc.description}. TIME: {loc.time_of_day}. "
+                      f"LIGHTING: {loc.lighting}. RECURRING PROPS: {', '.join(loc.recurring_props)}. "
+                      "No people, no text, no logos. Preserve this exact geography and props in every shot.")
+            image_bytes = image_generator.generate(prompt)
+            if not image_bytes:
+                raise RuntimeError(f"No canonical image returned for location {loc.name}")
+            image_path = references_dir / f"location_{loc.location_id}.png"
+            image_path.write_bytes(image_bytes)
+            uri = storage.upload(str(image_path), f"projects/{p.project_id}/references/location_{loc.location_id}.png")
+            loc.canonical_visual_assets = [AssetReference(
+                asset_type=AssetType.IMAGE, uri=uri,
+                metadata={"role": "location_identity", "location_id": loc.location_id,
+                          "mime_type": "image/png"})]
+        return WorldBible(locations=locations)
 
 
 class CinematographerAgent(BaseAgent):
@@ -235,6 +259,10 @@ class StoryboardAgent(BaseAgent):
             "- atmosphere: The sensory mood (e.g., 'hazy from smoke, sound of distant sirens').\n"
             "- character_ids: List of character_id strings. Empty if none.\n"
             "- emotional_direction: A specific, actionable note for the actor (e.g., 'tries to appear confident, but her trembling hands betray her fear').\n"
+            "- performance_objective: What the performer is trying to get in this moment.\n"
+            "- performance_subtext: What they conceal or cannot say.\n"
+            "- physical_behavior: Specific hands, posture, breath, facial behavior and pacing.\n"
+            "- eyelines: Exact focus and interaction eyelines.\n"
             "- sound: Key ambient sounds to be captured.\n"
             "- transition: The reason for the cut (e.g., 'cut on action', 'match cut to a similar shape').\n"
             "- duration: integer 8\n",
@@ -280,13 +308,22 @@ class VoiceAgent:
                 sample_rate_hertz=48000, speaking_rate=0.85, pitch=-2.0))
         Path(output_path).write_bytes(resp.audio_content)
 
-    def synthesize_dialogue(self, p: FilmProject, root: Path) -> List[str]:
+    # Compatibility seam for callers/tests that provide a single production TTS mock.
+    def synthesize(self, text: str, output_path: str) -> None:
+        self.synthesize_narration(text, output_path)
+
+    def synthesize_dialogue(self, p: FilmProject, root: Path) -> List[tuple[str, dict]]:
         dialogue_paths = []
         if not p.character_bible:
             return []
             
-        for scene in p.scenes:
+        cursor = 0.0
+        for scene in sorted(p.scenes, key=lambda x: x.index):
+            scene_duration = sum(shot.duration for shot in scene.shots)
+            lines = [line for line in scene.dialogue if line.line.strip()]
             for i, line in enumerate(scene.dialogue):
+                if not line.line.strip():
+                    continue
                 voice_name = self._get_voice_for_character(line.character_id, p.character_bible.characters)
                 output_path = root / f"dialogue_{scene.index}_{i}_{line.character_id}.mp3"
                 
@@ -299,7 +336,12 @@ class VoiceAgent:
                     )
                 )
                 output_path.write_bytes(resp.audio_content)
-                dialogue_paths.append(str(output_path))
+                slot = scene_duration / max(1, len(lines))
+                dialogue_paths.append((str(output_path), {
+                    "scene_id": scene.scene_id, "character_id": line.character_id,
+                    "text": line.line, "start": cursor + 0.75 + (i * slot),
+                }))
+            cursor += scene_duration
         return dialogue_paths
 
 
@@ -352,7 +394,7 @@ def _srt(s: float) -> str:
     return f"{h:02}:{m:02}:{sec:02},{ms:03}"
 
 
-def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "") -> dict:
+def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "", previous_shot: Shot | None = None) -> dict:
     """
     Construct a rich, self-contained Veo generation package from shot + Film Bible.
     Upgraded for festival-grade cinematic identity and polish.
@@ -397,14 +439,26 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "")
     parts.append(f"ACTION: {shot.action}. The action should be natural and unforced.")
 
     # Characters with full identity for continuity
-    reference_image_uri = None
+    reference_assets = []
+    if loc:
+        reference_assets.extend(loc.canonical_visual_assets)
     for c in visible_chars:
         parts.append(
             f"CHARACTER: {c.name}. PHYSICALITY: {c.physical_description}. "
             f"WARDROBE: {c.wardrobe}. MANNERISMS: {c.mannerisms}. "
             f"PERFORMANCE (subtle and internal): {shot.emotional_direction or c.motivation}.")
-        if c.reference_image_uri:
-            reference_image_uri = c.reference_image_uri
+        reference_assets.extend(c.canonical_visual_assets)
+        if c.reference_image_uri and not c.canonical_visual_assets:
+            reference_assets.append(AssetReference(asset_type=AssetType.IMAGE, uri=c.reference_image_uri,
+                                                    metadata={"role": "character_identity", "mime_type": "image/png"}))
+
+    if reference_assets:
+        parts.append("CANONICAL REFERENCE ASSETS (provided to the model, never ignore): " + "; ".join(
+            f"{a.metadata.get('role', 'identity')}={a.uri}" for a in reference_assets))
+    if previous_shot:
+        parts.append(f"PREVIOUS SHOT CONTINUITY: {previous_shot.subject}; {previous_shot.action}; "
+                     f"location={previous_shot.location_id}; transition={previous_shot.transition}. "
+                     "Continue screen direction, wardrobe, props, emotional state, and lighting progression.")
 
     # Camera & Composition
     cam_parts = [shot.shot_type]
@@ -421,6 +475,12 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "")
     # Atmosphere + Sound
     if shot.atmosphere: parts.append(f"ATMOSPHERE: {shot.atmosphere}.")
     if shot.sound: parts.append(f"PRODUCTION SOUND: The key ambient sound is {shot.sound}.")
+    parts.append("PERFORMANCE: " + " | ".join(x for x in [
+        f"objective={shot.performance_objective}" if shot.performance_objective else "",
+        f"emotion={shot.emotional_direction}" if shot.emotional_direction else "",
+        f"subtext={shot.performance_subtext}" if shot.performance_subtext else "",
+        f"physical behavior={shot.physical_behavior}" if shot.physical_behavior else "",
+        f"eyelines={shot.eyelines}" if shot.eyelines else ""] if x))
 
     # Final Command
     parts.append("Final output must be a single, continuous shot of the highest possible cinematic quality.")
@@ -428,5 +488,5 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "")
 
     return {
         "prompt": " ".join(parts),
-        "reference_image_uri": reference_image_uri,
+        "reference_assets": [a.model_dump() for a in reference_assets],
     }

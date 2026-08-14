@@ -1,7 +1,7 @@
 """Veo video generation — confirmed working: veo-3.1-generate-001 on vidgen-504817."""
 import time, random, uuid
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 from google import genai
 from google.genai import types
 from vidgen.providers.base import VideoGenerator
@@ -26,7 +26,7 @@ def _classify(err: str) -> str:
 
 
 class MockVideoGenerator(VideoGenerator):
-    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id="", reference_image=None):
+    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id="", reference_assets=None):
         import time as t; t.sleep(0.1)
         return GenerationJob(project_id=project_id, shot_id=shot_id, status="completed",
                              artifact_uri=f"{output_uri.rstrip('/')}/mock_{uuid.uuid4().hex[:8]}.mp4")
@@ -41,7 +41,7 @@ class VeoVideoGenerator(VideoGenerator):
         )
         self.model = settings.VEO_MODEL  # veo-3.1-generate-001
 
-    def _build_config(self, duration_seconds: int, output_uri: str):
+    def _build_config(self, duration_seconds: int, output_uri: str, reference_assets: Iterable[dict] = ()):
         args = dict(
             aspect_ratio="16:9",
             duration_seconds=duration_seconds,
@@ -49,6 +49,16 @@ class VeoVideoGenerator(VideoGenerator):
             output_gcs_uri=output_uri,
             generate_audio=True,
         )
+        references = []
+        for asset in reference_assets:
+            uri = asset.get("uri", "")
+            if not uri.startswith("gs://"):
+                raise ValueError(f"Veo reference must be a GCS URI, got {uri!r}")
+            references.append(types.VideoGenerationReferenceImage(
+                image=types.Image(gcs_uri=uri, mime_type=asset.get("metadata", {}).get("mime_type", "image/png")),
+                reference_type="asset"))
+        if references:
+            args["reference_images"] = references
         supported = set(types.GenerateVideosConfig.model_fields)
         return types.GenerateVideosConfig(**{k: v for k, v in args.items() if k in supported})
 
@@ -90,23 +100,19 @@ class VeoVideoGenerator(VideoGenerator):
         return None
 
     def generate_shot(self, prompt: str, output_uri: str, duration: int = 8,
-                      project_id: str = "", shot_id: str = "", reference_image: Optional[str] = None) -> GenerationJob:
+                      project_id: str = "", shot_id: str = "", reference_assets: Iterable[dict] = ()) -> GenerationJob:
         if not output_uri.endswith("/"):
             output_uri += "/"
         dur = duration if duration in (4, 6, 8) else 8
-        config = self._build_config(dur, output_uri)
+        config = self._build_config(dur, output_uri, reference_assets)
 
         last_err = "unknown"
         for attempt in range(settings.RETRY_ATTEMPTS):
             try:
                 print(f"[VEO] {shot_id} attempt {attempt+1}/{settings.RETRY_ATTEMPTS}")
                 
-                contents = [prompt]
-                if reference_image:
-                    contents.append(reference_image)
-
                 op = self.client.models.generate_videos(
-                    model=self.model, contents=contents, config=config
+                    model=self.model, prompt=prompt, config=config
                 )
                 op = self._poll(op)
 
