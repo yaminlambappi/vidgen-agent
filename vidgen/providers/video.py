@@ -26,7 +26,7 @@ def _classify(err: str) -> str:
 
 
 class MockVideoGenerator(VideoGenerator):
-    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id=""):
+    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id="", reference_image=None):
         import time as t; t.sleep(0.1)
         return GenerationJob(project_id=project_id, shot_id=shot_id, status="completed",
                              artifact_uri=f"{output_uri.rstrip('/')}/mock_{uuid.uuid4().hex[:8]}.mp4")
@@ -90,7 +90,7 @@ class VeoVideoGenerator(VideoGenerator):
         return None
 
     def generate_shot(self, prompt: str, output_uri: str, duration: int = 8,
-                      project_id: str = "", shot_id: str = "") -> GenerationJob:
+                      project_id: str = "", shot_id: str = "", reference_image: Optional[str] = None) -> GenerationJob:
         if not output_uri.endswith("/"):
             output_uri += "/"
         dur = duration if duration in (4, 6, 8) else 8
@@ -100,8 +100,13 @@ class VeoVideoGenerator(VideoGenerator):
         for attempt in range(settings.RETRY_ATTEMPTS):
             try:
                 print(f"[VEO] {shot_id} attempt {attempt+1}/{settings.RETRY_ATTEMPTS}")
+                
+                contents = [prompt]
+                if reference_image:
+                    contents.append(reference_image)
+
                 op = self.client.models.generate_videos(
-                    model=self.model, prompt=prompt, config=config
+                    model=self.model, contents=contents, config=config
                 )
                 op = self._poll(op)
 

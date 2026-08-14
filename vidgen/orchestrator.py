@@ -14,7 +14,7 @@ from vidgen.utils.ffmpeg import concatenate_shots, create_score, final_mix, vali
 from vidgen.agents import (ResearchAgent, StoryArchitectAgent, ScreenwriterAgent,
     CharacterDesignAgent, WorldDesignAgent, CinematographerAgent,
     StoryboardAgent, VoiceAgent, MusicAgent, EditorAgent, SubtitleAgent,
-    build_veo_prompt)
+    build_veo_generation_package)
 from vidgen.qc import QCMAgent
 
 _DET = ("404","not found","403","permission","invalid_argument","400","unsupported",
@@ -74,15 +74,22 @@ class Orchestrator:
         for attempt in range(settings.RETRY_ATTEMPTS):
             shot.attempts += 1
             # Build rich self-contained Veo prompt with full identity and any QC feedback
-            prompt = build_veo_prompt(shot, p, feedback)
+            gen_package = build_veo_generation_package(shot, p, feedback)
+            prompt = gen_package["prompt"]
+            reference_image_uri = gen_package["reference_image_uri"]
+            
             shot.veo_prompt = prompt # Log the exact prompt used
             shot.prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
             self.checkpoint(p)
 
             print(f"  [SHOT {shot.index:02d} attempt {attempt+1}/{settings.RETRY_ATTEMPTS}] Generating...")
             job = self.video_gen.generate_shot(
-                prompt=prompt, output_uri=output_uri,
-                duration=shot.duration, project_id=p.project_id, shot_id=shot.shot_id)
+                prompt=prompt,
+                reference_image=reference_image_uri,
+                output_uri=output_uri,
+                duration=shot.duration, 
+                project_id=p.project_id, 
+                shot_id=shot.shot_id)
 
             if job.status == "completed" and job.artifact_uri:
                 local_path = root / f"{shot.shot_id}_attempt_{attempt}.mp4"
@@ -154,13 +161,19 @@ class Orchestrator:
         narration = " ".join(
             sc.narration_text.strip() for sc in sorted(p.scenes, key=lambda x: x.index)
             if sc.narration_text).strip()
-        if not narration:
-            raise RuntimeError("Narration missing — screenplay incomplete")
-        narr = root / "narration.mp3"
-        self.voice.synthesize(narration, str(narr))
-        p.audio_plan.narration_uri = self.storage.upload(
-            str(narr), f"projects/{p.project_id}/audio/narration.mp3")
-        print(f"  [AUDIO] Narration {narr.stat().st_size//1024}KB → {p.audio_plan.narration_uri}")
+        if narration:
+            narr = root / "narration.mp3"
+            self.voice.synthesize_narration(narration, str(narr))
+            p.audio_plan.narration_uri = self.storage.upload(
+                str(narr), f"projects/{p.project_id}/audio/narration.mp3")
+            print(f"  [AUDIO] Narration {narr.stat().st_size//1024}KB → {p.audio_plan.narration_uri}")
+
+        dialogue_paths = self.voice.synthesize_dialogue(p, root)
+        for i, path in enumerate(dialogue_paths):
+            uri = self.storage.upload(path, f"projects/{p.project_id}/audio/dialogue_{i}.mp3")
+            p.audio_plan.dialogue_uris.append(uri)
+        if dialogue_paths:
+            print(f"  [AUDIO] Synthesized {len(dialogue_paths)} dialogue lines.")
 
         total_dur = sum(sh.duration for sc in p.scenes for sh in sc.shots)
         score = root / "music.m4a"

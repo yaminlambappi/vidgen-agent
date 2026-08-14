@@ -41,7 +41,7 @@ def create_film(payload: dict):
     
     project = FilmProject(topic=topic)
     active_projects[project.project_id] = project
-    orchestrator.save_checkpoint(project)
+    orchestrator.checkpoint(project)
     
     return project
 

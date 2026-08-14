@@ -14,7 +14,6 @@ Pillow==11.3.0
 
 # Utilities
 python-dotenv==1.2.2
-protobuf==4.25.8
 
 # Testing
 pytest==8.3.2

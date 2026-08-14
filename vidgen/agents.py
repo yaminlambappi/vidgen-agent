@@ -17,6 +17,7 @@ from vidgen.models import (
     Scene, Shot, MusicPlan, EditPlan, Character, Location,
 )
 from vidgen.providers.image import GeminiImageGenerator
+from vidgen.providers.storage import get_storage_provider
 
 _DET = ("400","404","403","invalid_argument","unsupported","not found",
         "does not have access","unauthenticated","permission denied")
@@ -114,6 +115,7 @@ class CharacterDesignAgent(BaseAgent):
             Out)
         
         image_generator = GeminiImageGenerator()
+        storage = get_storage_provider()
         references_dir = Path("references")
         references_dir.mkdir(exist_ok=True)
         
@@ -128,6 +130,10 @@ class CharacterDesignAgent(BaseAgent):
                 image_path = references_dir / f"character_{char.character_id}.png"
                 image_path.write_bytes(image_bytes)
                 char.reference_image_path = str(image_path)
+
+                # Upload to GCS and save URI
+                gcs_path = f"projects/{p.project_id}/references/character_{char.character_id}.png"
+                char.reference_image_uri = storage.upload(str(image_path), gcs_path)
 
         return CharacterBible(characters=r.characters[:3])
 
@@ -185,9 +191,10 @@ class ScreenwriterAgent(BaseAgent):
             "- Have a 2-3 sentence description of the scene's external action and internal subtext.\n"
             "- Use a specific location_id.\n"
             "- Contain 4-5 sentences of powerful, poetic voiceover prose for the narration_text. This is not exposition; it is thematic reflection.\n"
+            "- Contain 2-4 lines of sharp, character-driven dialogue. Each line must have a character_id and the text of the line.\n"
             "- Have a clear dramatic_purpose (e.g., 'To reveal the protagonist's hidden vulnerability').\n"
             "- Include an empty list for shots.",
-            "You are a master screenwriter. Return JSON. Use EXACT location_id values. Narration must be profound.",
+            "You are a master screenwriter. Return JSON. Use EXACT location_id and character_id values. Dialogue and narration must be profound.",
             Out)
         scenes = r.scenes[:3]
         for i, s in enumerate(scenes):
@@ -244,10 +251,27 @@ class StoryboardAgent(BaseAgent):
 
 
 class VoiceAgent:
-    def synthesize(self, text: str, output_path: str) -> None:
-        client = texttospeech.TextToSpeechClient()
+    def __init__(self):
+        self.client = texttospeech.TextToSpeechClient()
+        self.voice_map = {}
+
+    def _get_voice_for_character(self, character_id: str, characters: List[Character]) -> str:
+        if character_id not in self.voice_map:
+            # Simple round-robin voice assignment for now
+            voice_options = [
+                "en-US-Neural2-A", "en-US-Neural2-D", "en-US-Neural2-E",
+                "en-GB-Neural2-B", "en-GB-Neural2-C"
+            ]
+            char_index = next((i for i, c in enumerate(characters) if c.character_id == character_id), -1)
+            if char_index != -1:
+                self.voice_map[character_id] = voice_options[char_index % len(voice_options)]
+            else:
+                self.voice_map[character_id] = "en-US-Neural2-J" # Default fallback
+        return self.voice_map[character_id]
+
+    def synthesize_narration(self, text: str, output_path: str) -> None:
         # Upgraded for more gravitas and slower pace suitable for documentary
-        resp = client.synthesize_speech(
+        resp = self.client.synthesize_speech(
             input=texttospeech.SynthesisInput(text=text),
             voice=texttospeech.VoiceSelectionParams(
                 language_code="en-US", name=settings.TTS_VOICE, ssml_gender=texttospeech.SsmlVoiceGender.MALE),
@@ -255,6 +279,28 @@ class VoiceAgent:
                 audio_encoding=texttospeech.AudioEncoding.MP3,
                 sample_rate_hertz=48000, speaking_rate=0.85, pitch=-2.0))
         Path(output_path).write_bytes(resp.audio_content)
+
+    def synthesize_dialogue(self, p: FilmProject, root: Path) -> List[str]:
+        dialogue_paths = []
+        if not p.character_bible:
+            return []
+            
+        for scene in p.scenes:
+            for i, line in enumerate(scene.dialogue):
+                voice_name = self._get_voice_for_character(line.character_id, p.character_bible.characters)
+                output_path = root / f"dialogue_{scene.index}_{i}_{line.character_id}.mp3"
+                
+                resp = self.client.synthesize_speech(
+                    input=texttospeech.SynthesisInput(text=line.line),
+                    voice=texttospeech.VoiceSelectionParams(language_code="en-US", name=voice_name),
+                    audio_config=texttospeech.AudioConfig(
+                        audio_encoding=texttospeech.AudioEncoding.MP3,
+                        sample_rate_hertz=48000
+                    )
+                )
+                output_path.write_bytes(resp.audio_content)
+                dialogue_paths.append(str(output_path))
+        return dialogue_paths
 
 
 class MusicAgent(BaseAgent):
@@ -306,9 +352,9 @@ def _srt(s: float) -> str:
     return f"{h:02}:{m:02}:{sec:02},{ms:03}"
 
 
-def build_veo_prompt(shot: Shot, p: FilmProject, feedback: str = "") -> str:
+def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "") -> dict:
     """
-    Construct a rich, self-contained Veo prompt from shot + Film Bible.
+    Construct a rich, self-contained Veo generation package from shot + Film Bible.
     Upgraded for festival-grade cinematic identity and polish.
     """
     loc = next((l for l in (p.world_bible.locations if p.world_bible else [])
@@ -321,7 +367,7 @@ def build_veo_prompt(shot: Shot, p: FilmProject, feedback: str = "") -> str:
         "CINEMATIC FILM SHOT. 8K. Photorealistic. Emotionally resonant. No text, titles, watermarks, logos.",
         "This is for a serious, award-winning documentary-drama film."
     ]
-    
+
     # Inject QC feedback first if it exists
     if feedback:
         parts.append(feedback)
@@ -351,11 +397,14 @@ def build_veo_prompt(shot: Shot, p: FilmProject, feedback: str = "") -> str:
     parts.append(f"ACTION: {shot.action}. The action should be natural and unforced.")
 
     # Characters with full identity for continuity
+    reference_image_uri = None
     for c in visible_chars:
         parts.append(
             f"CHARACTER: {c.name}. PHYSICALITY: {c.physical_description}. "
             f"WARDROBE: {c.wardrobe}. MANNERISMS: {c.mannerisms}. "
             f"PERFORMANCE (subtle and internal): {shot.emotional_direction or c.motivation}.")
+        if c.reference_image_uri:
+            reference_image_uri = c.reference_image_uri
 
     # Camera & Composition
     cam_parts = [shot.shot_type]
@@ -377,4 +426,7 @@ def build_veo_prompt(shot: Shot, p: FilmProject, feedback: str = "") -> str:
     parts.append("Final output must be a single, continuous shot of the highest possible cinematic quality.")
     parts.append("CONTINUITY IS PARAMOUNT: Preserve all character appearances, wardrobe, and location details exactly as described. No random elements.")
 
-    return " ".join(parts)
+    return {
+        "prompt": " ".join(parts),
+        "reference_image_uri": reference_image_uri,
+    }

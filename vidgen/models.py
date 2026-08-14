@@ -36,6 +36,7 @@ class Character(BaseModel):
     mannerisms: str = ""
     arc: str = ""
     reference_image_path: str = ""
+    reference_image_uri: Optional[str] = ""
     canonical_visual_assets: List[AssetReference] = Field(default_factory=list)
 
 class CharacterBible(BaseModel):
@@ -85,6 +86,10 @@ class Shot(BaseModel):
     qc: Dict[str, Any] = Field(default_factory=dict)
     prompt_hash: str = ""
 
+class DialogueLine(BaseModel):
+    character_id: str = ""
+    line: str = ""
+
 class Scene(BaseModel):
     scene_id: str = Field(default_factory=_uid)
     index: int = 0
@@ -92,6 +97,7 @@ class Scene(BaseModel):
     description: str = ""
     location_id: str = ""
     narration_text: str = ""
+    dialogue: List[DialogueLine] = Field(default_factory=list)
     dramatic_purpose: str = ""
     shots: List[Shot] = Field(default_factory=list)
 
@@ -109,6 +115,7 @@ class AudioPlan(BaseModel):
     narration_uri: str = ""
     music_uri: str = ""
     subtitle_uri: str = ""
+    dialogue_uris: List[str] = Field(default_factory=list)
 
 class MusicPlan(BaseModel):
     mood: str = ""
