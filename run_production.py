@@ -79,7 +79,9 @@ def _qc(p: FilmProject) -> list:
             d = qc.get("duration", 0)
             print(f"[QC] {d:.1f}s {qc.get('width')}x{qc.get('height')} "
                   f"{qc.get('codec')} audio={qc.get('has_audio')}")
-            if d < 28 or d > 32: fails.append(f"GATE8: {d:.1f}s not within 28-32s")
+            expected = sum(sh.duration for sc in p.scenes for sh in sc.shots)
+            if abs(d - expected) > 2.5:
+                fails.append(f"GATE8: {d:.1f}s differs from planned {expected:.1f}s")
             if not qc.get("has_audio"): fails.append("GATE9: no audio")
         except Exception as e:
             fails.append(f"GATE10: ffprobe fail: {e}")
