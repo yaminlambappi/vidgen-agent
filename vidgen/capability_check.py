@@ -112,6 +112,7 @@ def check_image() -> bool:
         )
         chain = list(dict.fromkeys([
             settings.IMAGE_MODEL,
+            "gemini-2.5-flash-image",
             "gemini-2.0-flash-exp",
             "gemini-2.5-flash",
             "gemini-1.5-flash",

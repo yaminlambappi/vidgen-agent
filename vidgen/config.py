@@ -21,7 +21,8 @@ class Settings:
     # veo-3.1-generate-001 confirmed on vidgen-504817 / us-central1
     VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-generate-001")
     DIRECTOR_MODEL = os.getenv("DIRECTOR_MODEL", "gemini-2.5-flash")
-    IMAGE_MODEL = os.getenv("IMAGE_MODEL", "imagen-3.0-generate-002")
+    # Confirmed listed by the configured Vertex project; Imagen 3 is not.
+    IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
     TTS_VOICE = os.getenv("TTS_VOICE", "en-US-Neural2-J")
 
     VIDGEN_WORK_ROOT = Path(os.getenv("VIDGEN_WORK_ROOT", "/tmp/vidgen"))
