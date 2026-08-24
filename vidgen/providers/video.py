@@ -106,50 +106,34 @@ class VeoVideoGenerator(VideoGenerator):
         dur = duration if duration in (4, 6, 8) else 8
         config = self._build_config(dur, output_uri, reference_assets)
 
-        last_err = "unknown"
-        for attempt in range(settings.RETRY_ATTEMPTS):
-            try:
-                print(f"[VEO] {shot_id} attempt {attempt+1}/{settings.RETRY_ATTEMPTS}")
-                
-                op = self.client.models.generate_videos(
-                    model=self.model, prompt=prompt, config=config
-                )
-                op = self._poll(op)
+        try:
+            print(f"[VEO] {shot_id} submitting...")
+            op = self.client.models.generate_videos(
+                model=self.model, prompt=prompt, config=config
+            )
+            op = self._poll(op)
 
-                if not op.done:
-                    last_err = "Veo timed out"
-                    print(f"[VEO] {shot_id} timed out, retrying...")
-                    continue
+            if not op.done:
+                return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error="Veo timed out")
 
-                err_obj = getattr(op, "error", None)
-                if err_obj and getattr(err_obj, "code", 0) not in (0, None):
-                    last_err = str(err_obj)
-                    cls = _classify(last_err)
-                    if cls == "deterministic":
-                        return GenerationJob(project_id=project_id, shot_id=shot_id,
-                                             status="failed", error=f"DETERMINISTIC: {last_err}")
-                    print(f"[VEO] {shot_id} error {cls}: {last_err[:120]}")
-                    time.sleep(2 ** attempt)
-                    continue
+            err_obj = getattr(op, "error", None)
+            if err_obj and getattr(err_obj, "code", 0) not in (0, None):
+                return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error=str(err_obj))
 
-                uri = self._extract_uri(op, output_uri, shot_id)
-                if uri:
-                    print(f"[VEO] {shot_id} ✓ {uri}")
-                    return GenerationJob(project_id=project_id, shot_id=shot_id,
-                                         status="completed", artifact_uri=uri)
+            # Check for safety ratings or other metadata that might indicate a silent failure
+            metadata = getattr(op, "metadata", None) or {}
+            safety_ratings = metadata.get("safety_ratings")
+            error_message = metadata.get("error_message")
 
-                last_err = "no video URI in response"
-                time.sleep(2 ** attempt)
+            uri = self._extract_uri(op, output_uri, shot_id)
+            if uri:
+                print(f"[VEO] {shot_id} ✓ {uri}")
+                return GenerationJob(project_id=project_id, shot_id=shot_id,
+                                     status="completed", artifact_uri=uri)
 
-            except Exception as exc:
-                last_err = str(exc)
-                cls = _classify(last_err)
-                if cls == "deterministic":
-                    return GenerationJob(project_id=project_id, shot_id=shot_id,
-                                         status="failed", error=f"DETERMINISTIC: {last_err}")
-                print(f"[VEO] {shot_id} exception ({cls}): {last_err[:120]}")
-                if attempt < settings.RETRY_ATTEMPTS - 1:
-                    time.sleep(2 ** (attempt + 1))
+            return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error=f"no video URI in response. operation: {op}")
 
-        return GenerationJob(project_id=project_id, shot_id=shot_id,
-                             status="failed", error=last_err)
+        except Exception as exc:
+            # Any exception at this level is treated as a failure for the orchestrator to handle.
+            return GenerationJob(project_id=project_id, shot_id=shot_id,
+                                 status="failed", error=str(exc))

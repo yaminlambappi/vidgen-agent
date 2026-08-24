@@ -86,6 +86,7 @@ class Shot(BaseModel):
     sound: str = ""
     transition: str = ""
     veo_prompt: str = ""
+    generated_frame_uris: List[str] = Field(default_factory=list)
     generated_asset_uri: str = ""
     attempts: int = 0
     qc: Dict[str, Any] = Field(default_factory=dict)

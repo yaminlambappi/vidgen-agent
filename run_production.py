@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Production runner — Bangladesh Digital Dreams. Checkpoint-resumable."""
 from __future__ import annotations
-import json, sys, time
+import json, sys, time, shutil
 from pathlib import Path
 from vidgen.config import settings
 from vidgen.models import FilmProject, FilmStatus
@@ -89,25 +89,28 @@ def _qc(p: FilmProject) -> list:
 
 
 def _run(orc: Orchestrator, p: FilmProject) -> FilmProject:
-    for attempt in range(3):
-        try:
-            orc.run(p); return p
-        except Exception as exc:
-            print(f"\n[ERROR] attempt {attempt+1}/3: {exc}")
-            if attempt < 2:
-                w = 4**attempt
-                print(f"[RETRY] {w}s ...")
-                time.sleep(w)
-                sf = STATE_DIR / p.project_id / "project_state.json"
-                if sf.exists():
-                    p = FilmProject.model_validate_json(sf.read_text())
-                    p = _reset(p)
-            else:
-                raise
+    """Runs the orchestrator once. The orchestrator has its own internal retry logic."""
+    try:
+        orc.run(p)
+    except Exception as exc:
+        print(f"\n[FATAL ERROR] The orchestrator failed and could not recover: {exc}")
+        # The orchestrator already sets the project status to FAILED on exit.
+        raise  # Re-raise the exception to stop the script.
     return p
 
 
 def main():
+    if "--from-scratch" in sys.argv:
+        if CHECKPOINT.exists():
+            pid = CHECKPOINT.read_text().strip()
+            shutil.rmtree(STATE_DIR / pid, ignore_errors=True)
+            CHECKPOINT.unlink()
+            print(f"[CLEAN] Removed project {pid} and started from scratch.")
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        print("[ABORT] ffmpeg or ffprobe is not installed or not in PATH.")
+        print("Please install FFmpeg: sudo apt-get update && sudo apt-get install -y ffmpeg")
+        sys.exit(1)
+
     print("="*72)
     print("VIDGEN — ODYSSEUS Trailer")
     print("="*72)
