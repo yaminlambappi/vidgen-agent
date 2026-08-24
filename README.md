@@ -153,33 +153,20 @@ gcloud run deploy vidgen-agent \
 
 ## Usage: Generating the ODYSSEUS Trailer
 
-Once deployed, you can trigger the film generation by sending a `POST` request to the Cloud Run service URL.
+The primary method for generating the film is to run the `run_production.py` script in an environment with the necessary permissions and installed dependencies (like a VM or a local machine configured with `gcloud auth`). The FastAPI service is available for health checks and potentially triggering runs, but the resumable script is more robust for long-running productions.
 
-1.  **Get your Cloud Run Service URL**:
+1.  **Ensure you are authenticated**:
     ```bash
-    gcloud run services describe vidgen-agent --region=us-central1 --project=YOUR_PROJECT_ID --format='value(status.url)'
+    gcloud auth application-default login
     ```
-    This will output the URL (e.g., `https://vidgen-agent-xyz-uc.a.run.app`).
 
-2.  **Trigger Film Generation**: Use `curl` to send a request to the `/films` endpoint. The service will then begin processing the film.
-
+2.  **Run the Production Script**: Navigate to the project directory and execute the script. It will automatically pick up the `ODYSSEUS` topic, create a new project or resume an existing one, and run the entire pipeline.
     ```bash
-    SERVICE_URL=$(gcloud run services describe vidgen-agent --region=us-central1 --project=YOUR_PROJECT_ID --format='value(status.url)')
-    
-    curl -X POST "${SERVICE_URL}/films" \
-         -H "Content-Type: application/json" \
-         -d '{
-               "topic": "ODYSSEUS trailer: mythic, emotionally powerful, visually coherent, premium theatrical quality. Odysseus has spent years trying to return home after war. The sea, gods, monsters, and his own memories have transformed the journey into a psychological battle. The greatest battle is no longer against the sea—it is against what he has become. Use a compact three-act trailer structure: * 0–8s — Mystery: vast ancient sea, exhausted Odysseus on a damaged ship, haunting atmosphere, restrained dialogue. * 8–20s — Escalation: rapid but coherent flashes of danger—storm, enormous silhouette beneath the water, warriors/ruins, Odysseus fighting, Penelope/home as an emotional memory. * 20–30s — Payoff: extreme danger and emotional revelation, decisive final image, then title ODYSSEUS and a powerful final sound/music hit."
-             }'
+    # Ensure your environment variables from the .env file are loaded
+    # (e.g., by using a library that loads them or by sourcing them)
+    python3 run_production.py
     ```
-    This will return a `project_id`.
-
-3.  **Run the Film Production Pipeline**:
-    ```bash
-    PROJECT_ID="your-returned-project-id" # Replace with the project_id from the previous step
-    curl -X POST "${SERVICE_URL}/films/${PROJECT_ID}/run"
-    ```
-    The pipeline will execute asynchronously. You can monitor its progress by checking the Cloud Run service logs in Google Cloud Logging.
+    The script will print its progress to the console and, upon completion, will provide the GCS URI for the final MP4 file.
 
 ## Project Structure
 

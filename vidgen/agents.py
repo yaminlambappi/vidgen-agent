@@ -199,6 +199,7 @@ class ScreenwriterAgent(BaseAgent):
         scenes = r.scenes[:3]
         for i, s in enumerate(scenes):
             s.index = i + 1
+            s.scene_id = f"S{i+1}"
         return scenes
 
 
@@ -241,16 +242,15 @@ class StoryboardAgent(BaseAgent):
             "- eyelines: Exact focus and interaction eyelines.\n"
             "- sound: Key ambient sounds to be captured.\n"
             "- transition: The reason for the cut (e.g., 'cut on action', 'match cut to a similar shape').\n"
-            "- duration: integer 8\n",
+            "- duration: An integer number of seconds for the shot's length, between 4 and 12, based on the shot's creative purpose.\n",
             f"You are a visionary director. Return JSON array of exactly {n} shots. Every field is mandatory and must be specific and cinematic.",
             Out)
 
         shots = r.shots[:n]
         for i, shot in enumerate(shots):
-            shot.scene_id = scene.scene_id
             shot.index = i + 1
+            shot.shot_id = f"{scene.scene_id}_SH{i+1:02d}"
             shot.location_id = scene.location_id
-            shot.duration = 8
         return shots
 
 
@@ -388,8 +388,14 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
 
     # Inject QC feedback first if it exists
     if feedback:
-        parts.append(feedback)
-
+        # Reframe QC feedback as a strong negative prompt for better model guidance
+        if "artifact" in feedback.lower() or "distorted" in feedback.lower():
+            negative_prompt = feedback.replace("CORRECTIVE FEEDBACK: The previous attempt failed QC. Address these issues: ", "")
+            negative_prompt = negative_prompt.replace("Visual artifacts detected: ", "").replace("Continuity break: ", "")
+            parts.append(f"== DO NOT GENERATE ==\nAVOID THE FOLLOWING: {negative_prompt}\nFocus on photorealism and natural object construction. Do not generate distorted, mangled, or unnatural-looking hands, props, or textures.\n== END DO NOT GENERATE ==")
+        else:
+            parts.append(feedback)
+            
     # Cinematic Identity Mandate
     if cine:
         parts.append(
@@ -416,26 +422,43 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
 
     # Characters with full identity for continuity
     reference_assets = []
-    if loc:
-        reference_assets.extend(loc.canonical_visual_assets)
+    if loc and loc.canonical_visual_assets:
+        reference_assets.append(loc.canonical_visual_assets[0])
+
+    if not reference_assets:
+        for c in visible_chars:
+            if c.canonical_visual_assets:
+                reference_assets.append(c.canonical_visual_assets[0])
+                break # only take the first character
+
+    # Add previous shot's frame as a high-priority continuity reference
+    # if previous_shot and previous_shot.generated_asset_uri:
+    #     if previous_shot.generated_frame_uris:
+    #         for i, frame_uri in enumerate(previous_shot.generated_frame_uris):
+    #             reference_assets.append(AssetReference(
+    #                 asset_type=AssetType.IMAGE, uri=frame_uri,
+    #                 metadata={"role": f"previous_shot_frame_{i}", "mime_type": "image/png"}))
+
     for c in visible_chars:
         parts.append(
             f"CHARACTER: {c.name}. PHYSICALITY: {c.physical_description}. "
             f"WARDROBE: {c.wardrobe}. MANNERISMS: {c.mannerisms}. "
             f"PERFORMANCE (subtle and internal): {shot.emotional_direction or c.motivation}.")
-        reference_assets.extend(c.canonical_visual_assets)
         if c.reference_image_uri and not c.canonical_visual_assets:
             reference_assets.append(AssetReference(asset_type=AssetType.IMAGE, uri=c.reference_image_uri,
                                                     metadata={"role": "character_identity", "mime_type": "image/png"}))
-
+    
+    is_new_scene = previous_shot and shot.scene_id != previous_shot.scene_id
+    
     if reference_assets:
         parts.append("CANONICAL REFERENCE ASSETS (provided to the model, never ignore): " + "; ".join(
-            f"{a.metadata.get('role', 'identity')}={a.uri}" for a in reference_assets))
+            f"{a.metadata.get('role', 'identity')}={a.uri}" for a in reference_assets if a.uri))
     if previous_shot:
-        parts.append(f"PREVIOUS SHOT CONTINUITY: {previous_shot.subject}; {previous_shot.action}; "
-                     f"location={previous_shot.location_id}; transition={previous_shot.transition}. "
-                     "Continue screen direction, wardrobe, props, emotional state, and lighting progression.")
-
+        if is_new_scene:
+            parts.append("NOTE: This is the first shot of a NEW SCENE. The previous shot's frame is a creative reference for tone and character, not a direct continuity link.")
+        else:
+            parts.append(f"PREVIOUS SHOT CONTINUITY: {previous_shot.subject}; {previous_shot.action}; location={previous_shot.location_id}. Continue screen direction, wardrobe, props, emotional state, and lighting.")
+    
     # Camera & Composition
     cam_parts = [shot.shot_type]
     if shot.camera: cam_parts.append(shot.camera)
