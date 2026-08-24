@@ -46,8 +46,23 @@ def concatenate_shots(shot_files:List[str],output_path:str):
     with ThreadPoolExecutor(max_workers=4) as executor:
         normalized = list(executor.map(process_shot, enumerate(shot_files)))
 
-    manifest=work_dir/"concat.txt"; manifest.write_text("".join(f"file '{Path(x).resolve().as_posix()}'\n" for x in normalized))
-    run_ffmpeg(["-f","concat","-safe","0","-i",str(manifest),"-c","copy","-movflags","+faststart",output_path])
+    # Do not use the concat demuxer with stream-copy here.  Some generated MP4s
+    # carry non-monotonic/VFR packet timestamps; stream-copying those segments
+    # can silently truncate the assembled timeline even though every source
+    # probes at its expected duration.  The concat filter rebuilds one continuous
+    # audio/video timeline from the normalized streams.
+    inputs = []
+    chains = []
+    for i, path in enumerate(normalized):
+        inputs.extend(["-i", path])
+        chains.append(f"[{i}:v][{i}:a]")
+    graph = "".join(chains) + f"concat=n={len(normalized)}:v=1:a=1[v][a]"
+    run_ffmpeg([
+        *inputs, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000",
+        "-movflags", "+faststart", output_path,
+    ])
 def create_score(output_path:str,duration:float,tempo:str="72 bpm"):
     # An original generated score bed, synthesized rather than a silent fallback.
     # Its duration is exact; ducking/mastering happen in final_mix.
