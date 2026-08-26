@@ -2,6 +2,7 @@
 """Production runner — Ghost of Ithaca. Checkpoint-resumable."""
 from __future__ import annotations
 import os
+import os
 import json, sys, time, shutil
 from pathlib import Path
 from vidgen.config import settings
