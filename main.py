@@ -4,6 +4,10 @@ import argparse
 from typing import Dict, Any, List
 import uuid
 from fastapi import FastAPI, BackgroundTasks, HTTPException
+from pydantic import BaseModel, Field, ValidationError
+import requests
+from google.auth import default as google_auth_default
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from fastapi.responses import FileResponse
 
 from vidgen.config import settings
@@ -19,6 +23,45 @@ app = FastAPI(
 active_projects: Dict[str, FilmProject] = {}
 orchestrator = Orchestrator()
 
+
+class FilmCreateRequest(BaseModel):
+    topic: str = Field(..., min_length=5)
+    duration_seconds: int = Field(60, ge=4, le=300)
+    genre: str = Field(..., min_length=3)
+    language: str = Field("English")
+    aspect_ratio: str = Field("16:9")
+
+
+def _submit_cloud_run_job(project_id: str) -> dict:
+    """
+    Trigger a Cloud Run Job execution by calling the Cloud Run Jobs API.
+    Requires env var CLOUD_RUN_JOB_NAME to be set when running in production.
+    This function attempts to obtain an access token from the environment
+    credentials and call the Jobs:run endpoint. If the environment lacks
+    a configured job name, it raises RuntimeError so the caller can report
+    the missing configuration as an external blocker.
+    """
+    job_name = os.getenv("CLOUD_RUN_JOB_NAME")
+    if not job_name:
+        raise RuntimeError("Missing CLOUD_RUN_JOB_NAME for production job execution")
+
+    project = settings.GOOGLE_CLOUD_PROJECT
+    location = settings.GOOGLE_CLOUD_LOCATION
+    # Build endpoint
+    url = f"https://run.googleapis.com/v2/projects/{project}/locations/{location}/jobs/{job_name}:run"
+
+    # Acquire credentials and token
+    creds, _ = google_auth_default()
+    creds.refresh(GoogleAuthRequest())
+    token = creds.token
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # Minimal body — rely on job template to know how to pick up project state from GCS.
+    resp = requests.post(url, headers=headers, json={})
+    if not resp.ok:
+        raise RuntimeError(f"Cloud Run Jobs API returned {resp.status_code}: {resp.text}")
+    return resp.json()
+
 @app.get("/")
 def health_check():
     return {
@@ -28,6 +71,102 @@ def health_check():
         "allow_real_generation": settings.ALLOW_REAL_GENERATION,
         "location": settings.GOOGLE_CLOUD_LOCATION
     }
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
+def _load_project(project_id: str) -> FilmProject | None:
+    # First check in-memory
+    if project_id in active_projects:
+        return active_projects[project_id]
+
+    # Then try local disk
+    state_file = settings.VIDGEN_WORK_ROOT / project_id / "project_state.json"
+    if state_file.exists():
+        try:
+            txt = state_file.read_text()
+            proj = FilmProject.model_validate_json(txt)
+            active_projects[project_id] = proj
+            return proj
+        except Exception:
+            pass
+
+    # Finally try GCS checkpoint
+    gcs_path = f"gs://{settings.GCS_BUCKET}/projects/{project_id}/state.json"
+    try:
+        if orchestrator.storage.exists(gcs_path):
+            local = settings.VIDGEN_WORK_ROOT / project_id / "project_state.json"
+            orchestrator.storage.download(gcs_path, str(local))
+            txt = local.read_text()
+            proj = FilmProject.model_validate_json(txt)
+            active_projects[project_id] = proj
+            return proj
+    except Exception:
+        pass
+    return None
+
+
+@app.post("/api/v1/films")
+def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
+    # Validate request via Pydantic
+    try:
+        data = payload.model_dump()
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Create project
+    project = FilmProject(topic=data["topic"])
+    # Ensure idempotency: if an identical project exists (by topic + duration), return it
+    for p in list(active_projects.values()):
+        if p.topic == project.topic:
+            return {"project_id": p.project_id}
+
+    active_projects[project.project_id] = project
+    orchestrator.checkpoint(project)
+
+    # In production, submit durable job to Cloud Run Jobs
+    if settings.is_production:
+        try:
+            submission = _submit_cloud_run_job(project.project_id)
+            return {"project_id": project.project_id, "submitted": True, "submission": submission}
+        except Exception as exc:
+            # Persist failure state and return error
+            project.status = FilmStatus.FAILED
+            project.message = f"Job submission failed: {exc}"
+            orchestrator.checkpoint(project)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    # For non-production, schedule background execution (simulation)
+    bg.add_task(orchestrator.run, project)
+    return {"project_id": project.project_id, "submitted": False}
+
+
+@app.get("/api/v1/films/{project_id}")
+def get_film_status(project_id: str):
+    proj = _load_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {
+        "project_id": proj.project_id,
+        "status": proj.status.value,
+        "progress": proj.progress,
+        "final_video_uri": proj.final_manifest_uri or None,
+        "manifest_uri": proj.final_manifest_uri or None,
+        "error": None if proj.status != FilmStatus.FAILED else proj.message,
+    }
+
+
+@app.get("/api/v1/films/{project_id}/result")
+def get_film_result(project_id: str):
+    proj = _load_project(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if proj.status != FilmStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Project not completed yet")
+    return {"project_id": proj.project_id, "final_video_uri": proj.final_manifest_uri}
 
 @app.get("/films")
 def list_films():
