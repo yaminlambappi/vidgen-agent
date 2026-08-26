@@ -353,12 +353,20 @@ class SubtitleAgent:
         for sc in sorted(p.scenes, key=lambda x: x.index):
             dur = sum(sh.duration for sh in sc.shots)
             if sc.narration_text:
-                # Add a slight delay for readability
-                start_time = t + 0.5
-                end_time = t + dur - 0.5
-                lines += [str(idx), f"{_srt(start_time)} --> {_srt(end_time)}",
-                          sc.narration_text.strip(), ""]
-                idx += 1
+                words = sc.narration_text.strip().split()
+                if words:
+                    # Distribute words across the duration with 0.5s buffer at start and end
+                    effective_dur = max(0.1, dur - 1.0)
+                    group_size = 3
+                    groups = [words[i:i+group_size] for i in range(0, len(words), group_size)]
+                    group_dur = effective_dur / len(groups)
+                    
+                    for i, group in enumerate(groups):
+                        start_time = t + 0.5 + (i * group_dur)
+                        end_time = start_time + group_dur
+                        lines += [str(idx), f"{_srt(start_time)} --> {_srt(end_time)}",
+                                  " ".join(group), ""]
+                        idx += 1
             t += dur
         return "\n".join(lines)
 

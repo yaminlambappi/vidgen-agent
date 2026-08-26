@@ -21,14 +21,14 @@ class CloudStorageProvider(StorageProvider):
         ext = local_path.rsplit(".", 1)[-1].lower() if "." in local_path else ""
         bucket = self._client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        blob.upload_from_filename(local_path, content_type=ct.get(ext, "application/octet-stream"))
+        blob.upload_from_filename(local_path, content_type=ct.get(ext, "application/octet-stream"), timeout=600)
         return f"gs://{bucket_name}/{blob_name}"
 
     def download(self, remote_path: str, local_path: str) -> None:
         path = remote_path[5:] if remote_path.startswith("gs://") else remote_path
         bucket_name, blob_name = path.split("/", 1)
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        self._client.bucket(bucket_name).blob(blob_name).download_to_filename(local_path)
+        self._client.bucket(bucket_name).blob(blob_name).download_to_filename(local_path, timeout=600)
 
     def exists(self, remote_path: str) -> bool:
         if not remote_path.startswith("gs://"):

@@ -72,14 +72,20 @@ def final_mix(video_path:str,output_path:str,subtitle_path:Optional[str]=None,na
     if not narration_path or not Path(narration_path).exists(): raise RuntimeError("Required narration missing")
     if not music_path or not Path(music_path).exists(): raise RuntimeError("Required score missing")
     vf="eq=contrast=1.04:brightness=-0.008:saturation=0.96,unsharp=5:5:0.18,format=yuv420p"
-    if subtitle_path: vf+=",subtitles='"+subtitle_path.replace("'",r"\\'")+"':force_style='FontName=DejaVu Sans,FontSize=22,Outline=2,Shadow=1,MarginV=42'"
+    if subtitle_path and settings.BURN_SUBTITLES:
+        vf+=",subtitles='"+subtitle_path.replace("'",r"\\'")+"':force_style='FontName=DejaVu Sans,FontSize=22,Outline=2,Shadow=1,MarginV=42'"
+    
     # Dialogue is delayed onto editorial beats, then it ducks music along with narration.
     command = ["-i", video_path, "-i", narration_path, "-stream_loop", "-1", "-i", music_path]
-    filters = [f"[0:v]{vf}[v]", "[0:a]aresample=48000,volume=0.28[amb]",
-               "[2:a]aresample=48000,volume=0.20[music]"]
     
+    # We force a consistent format (48k, stereo, fltp) for all audio processing to avoid filter format negotiation failures.
+    afmt = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    filters = [f"[0:v]{vf}[v]", f"[0:a]{afmt},volume=0.28[amb]",
+               f"[2:a]{afmt},volume=0.20[music]"]
+    
+    filters.append(f"[1:a]{afmt}[narr]")
     if dialogue_tracks:
-        speech_labels = ["[1:a]"] # Narration is input 1
+        speech_labels = ["[narr]"]
         for index, track in enumerate(dialogue_tracks):
             path = track.get("path")
             if not path or not Path(path).exists():
@@ -88,12 +94,12 @@ def final_mix(video_path:str,output_path:str,subtitle_path:Optional[str]=None,na
             delay = max(0, int(float(track.get("start", 0)) * 1000))
             label = f"dlg{index}"
             # Input index is 3 + track index
-            filters.append(f"[{index + 3}:a]aresample=48000,adelay={delay}|{delay},apad[{label}]")
+            filters.append(f"[{index + 3}:a]{afmt},adelay={delay}|{delay},apad[{label}]")
             speech_labels.append(f"[{label}]")
         filters.append("".join(speech_labels) + f"amix=inputs={len(speech_labels)}:duration=first:normalize=0[speech]")
     else:
         # If no dialogue, narration is the only speech track.
-        filters.append("[1:a]aresample=48000,apad[speech]")
+        filters.append("[narr]apad[speech]")
 
     final_filters = filters + ["[speech]asplit[speech_sidechain][speech_mix]",
                                "[music][speech_sidechain]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=400[duck]",

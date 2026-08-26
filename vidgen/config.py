@@ -24,6 +24,7 @@ class Settings:
     # Confirmed listed by the configured Vertex project; Imagen 3 is not.
     IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
     TTS_VOICE = os.getenv("TTS_VOICE", "en-US-Neural2-J")
+    BURN_SUBTITLES = os.getenv("BURN_SUBTITLES", "true").lower() == "true"
 
     VIDGEN_WORK_ROOT = Path(os.getenv("VIDGEN_WORK_ROOT", "/tmp/vidgen"))
 
