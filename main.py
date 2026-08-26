@@ -145,7 +145,7 @@ def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
             existing_id = j.get("project_id")
             if existing_id:
                 proj = _load_project(existing_id)
-                if proj:
+                if proj and proj.status != FilmStatus.FAILED:
                     return {"project_id": existing_id, "existing": True}
     except Exception:
         # On storage lookup failure, proceed to create a new project (will be retriable by user)
