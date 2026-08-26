@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse
 from vidgen.config import settings
 from vidgen.models import FilmProject, FilmStatus
 from vidgen.orchestrator import Orchestrator
+from pathlib import Path
+import hashlib, json
 
 app = FastAPI(
     title="VidGen Autonomous Film Studio",
@@ -56,8 +58,19 @@ def _submit_cloud_run_job(project_id: str) -> dict:
     token = creds.token
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    # Minimal body — rely on job template to know how to pick up project state from GCS.
-    resp = requests.post(url, headers=headers, json={})
+    # Build a RunJobRequest with container override to pass the VIDGEN_PROJECT_ID
+    body = {
+        "overrides": {
+            "containerOverrides": [
+                {
+                    "env": [
+                        {"name": "VIDGEN_PROJECT_ID", "value": project_id}
+                    ]
+                }
+            ]
+        }
+    }
+    resp = requests.post(url, headers=headers, json=body)
     if not resp.ok:
         raise RuntimeError(f"Cloud Run Jobs API returned {resp.status_code}: {resp.text}")
     return resp.json()
@@ -117,17 +130,52 @@ def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Create project
-    project = FilmProject(topic=data["topic"])
-    # Ensure idempotency: if an identical project exists (by topic + duration), return it
-    for p in list(active_projects.values()):
-        if p.topic == project.topic:
-            return {"project_id": p.project_id}
+    # Compute request fingerprint for idempotency
+    fp_src = f"{data['topic']}|{data['duration_seconds']}|{data['genre']}|{data['language']}|{data['aspect_ratio']}"
+    fingerprint = hashlib.sha256(fp_src.encode()).hexdigest()
 
+    # Check persistent fingerprint index in GCS
+    fp_path = f"gs://{settings.GCS_BUCKET}/fingerprints/{fingerprint}.json"
+    try:
+        if orchestrator.storage.exists(fp_path):
+            # load existing mapping
+            local_fp = settings.VIDGEN_WORK_ROOT / f"fingerprint_{fingerprint}.json"
+            orchestrator.storage.download(fp_path, str(local_fp))
+            j = json.loads(local_fp.read_text())
+            existing_id = j.get("project_id")
+            if existing_id:
+                proj = _load_project(existing_id)
+                if proj:
+                    return {"project_id": existing_id, "existing": True}
+    except Exception:
+        # On storage lookup failure, proceed to create a new project (will be retriable by user)
+        pass
+
+    # Create project with requested fields
+    project = FilmProject(
+        topic=data["topic"],
+        duration_seconds=data["duration_seconds"],
+        genre=data["genre"],
+        language=data["language"],
+        aspect_ratio=data["aspect_ratio"],
+        request_fingerprint=fingerprint,
+    )
+
+    # Persist in-memory and checkpoint to GCS
     active_projects[project.project_id] = project
     orchestrator.checkpoint(project)
 
-    # In production, submit durable job to Cloud Run Jobs
+    # Persist fingerprint mapping to GCS for idempotency
+    try:
+        local_fp = settings.VIDGEN_WORK_ROOT / f"fingerprint_{fingerprint}.json"
+        local_fp.parent.mkdir(parents=True, exist_ok=True)
+        local_fp.write_text(json.dumps({"project_id": project.project_id, "request": data}))
+        orchestrator.storage.upload(str(local_fp), f"fingerprints/{fingerprint}.json")
+    except Exception:
+        # Non-fatal: continue even if fingerprint upload failed
+        pass
+
+    # In production, submit durable job to Cloud Run Jobs (do not attempt to validate run.jobs.run here)
     if settings.is_production:
         try:
             submission = _submit_cloud_run_job(project.project_id)
@@ -139,8 +187,8 @@ def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
             orchestrator.checkpoint(project)
             raise HTTPException(status_code=500, detail=str(exc))
 
-    # For non-production, schedule background execution (simulation)
-    bg.add_task(orchestrator.run, project)
+    # Do not run long-running production/simulation work inline from the API.
+    # Use the separate simulation/run endpoints or Cloud Run Job invocation to start production.
     return {"project_id": project.project_id, "submitted": False}
 
 

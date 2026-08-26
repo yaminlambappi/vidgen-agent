@@ -147,10 +147,17 @@ class FinalManifest(BaseModel):
     duration_seconds: float = 0
     shots: int = 0
     scenes: int = 0
+    qc: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=_now)
+    request: Dict[str, Any] = Field(default_factory=dict)
 
 class FilmProject(BaseModel):
     project_id: str = Field(default_factory=_uid)
     topic: str = ""
+    duration_seconds: int = 0
+    genre: str = ""
+    language: str = ""
+    aspect_ratio: str = "16:9"
     status: FilmStatus = FilmStatus.QUEUED
     progress: int = 0
     message: str = "Queued."
@@ -164,6 +171,9 @@ class FilmProject(BaseModel):
     music_plan: Optional[MusicPlan] = None
     final_manifest_uri: str = ""
     qc_report: Dict[str, Any] = Field(default_factory=dict)
+    request_fingerprint: str = ""
+    last_error_type: str = ""
+    last_error_message: str = ""
     updated_at: datetime = Field(default_factory=_now)
 
     @field_validator("updated_at", mode="before")

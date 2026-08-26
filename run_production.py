@@ -153,13 +153,24 @@ def main():
     if not settings.is_production:
         print("[ABORT] Set FILM_MODE=production ALLOW_REAL_GENERATION=true")
         sys.exit(1)
+    # In production, require an explicit project id to avoid running a hardcoded or accidental project
+    vidgen_pid = os.getenv("VIDGEN_PROJECT_ID")
+    if not vidgen_pid:
+        print("[ABORT] Production worker requires VIDGEN_PROJECT_ID environment variable")
+        sys.exit(2)
     if not settings.GOOGLE_CLOUD_PROJECT:
         print("[ABORT] GOOGLE_CLOUD_PROJECT not set")
         sys.exit(1)
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     orc = Orchestrator()
-    p = _load_or_new(orc)
+
+    # If VIDGEN_PROJECT_ID is supplied via environment, load that exact project
+    # VIDGEN_PROJECT_ID is guaranteed present above in production mode
+    p = _restore_from_gcs(orc, os.getenv("VIDGEN_PROJECT_ID"))
+    if not p:
+        print(f"[ERROR] Could not restore project {os.getenv('VIDGEN_PROJECT_ID')} from GCS")
+        sys.exit(3)
 
     if p.status == FilmStatus.COMPLETED:
         print("[STATUS] Already complete — QC only")
