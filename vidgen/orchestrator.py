@@ -230,8 +230,8 @@ class Orchestrator:
                 try:
                     if not local.exists():
                         self.storage.download(uri, str(local))
-                    if local.stat().st_size < 100: # Simple sanity check for audio/text
-                         raise RuntimeError(f"Asset {name} too small: {local.stat().st_size} bytes")
+                    if settings.is_production and local.stat().st_size < 100:
+                        raise RuntimeError(f"Asset {name} too small: {local.stat().st_size} bytes")
                     break
                 except Exception as e:
                     print(f"  [WARN] Download failed for {name} (attempt {attempt+1}): {e}")

@@ -105,6 +105,16 @@ class TestSimulation(unittest.TestCase):
             self.assertEqual(project.status, FilmStatus.COMPLETED)
             mock_gen.assert_called()
 
+    def test_mock_storage_download_creates_valid_media(self):
+        """Simulation storage should emit valid stub media so QC is not blocked by placeholder bytes."""
+        from vidgen.providers.storage import MockStorageProvider
+
+        target = Path(settings.VIDGEN_WORK_ROOT) / "mock_test" / "shot.mp4"
+        MockStorageProvider().download("gs://mock/shot.mp4", str(target))
+
+        self.assertTrue(target.exists())
+        self.assertGreater(target.stat().st_size, 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

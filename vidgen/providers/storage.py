@@ -1,7 +1,45 @@
+import shutil
+import subprocess
 from pathlib import Path
 from google.cloud import storage as gcs
 from vidgen.providers.base import StorageProvider
 from vidgen.config import settings
+
+
+def _write_stub_media(local_path: str, ext: str) -> None:
+    Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        Path(local_path).write_bytes(b"mock-media")
+        return
+
+    if ext == ".mp4":
+        cmd = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-movflags", "+faststart", local_path,
+        ]
+    elif ext in {".m4a", ".mp3"}:
+        cmd = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=1",
+            "-c:a", "aac" if ext == ".m4a" else "libmp3lame",
+            "-q:a", "5" if ext == ".mp3" else "8",
+            local_path,
+        ]
+    elif ext == ".srt":
+        Path(local_path).write_text("1\n00:00:00,000 --> 00:00:01,000\nmock\n\n")
+        return
+    else:
+        Path(local_path).write_text("mock")
+        return
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception:
+        Path(local_path).write_bytes(b"mock-media")
 
 
 class CloudStorageProvider(StorageProvider):
@@ -45,8 +83,8 @@ class MockStorageProvider(StorageProvider):
         return uri
 
     def download(self, remote_path: str, local_path: str) -> None:
-        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(local_path).write_text("mock")
+        ext = Path(local_path).suffix.lower()
+        _write_stub_media(local_path, ext)
 
     def exists(self, remote_path: str) -> bool:
         return True
