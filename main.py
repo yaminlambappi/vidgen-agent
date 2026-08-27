@@ -247,10 +247,11 @@ def simulate_film(project_id: str, bg_tasks: BackgroundTasks):
 @app.post("/films/{project_id}/run")
 def run_film(project_id: str):
     """Synchronous worker endpoint for Cloud Run Jobs/invocations."""
-    if project_id not in active_projects:
+    proj = _load_project(project_id)
+    if not proj:
         raise HTTPException(status_code=404, detail="Project not found.")
-    orchestrator.run(active_projects[project_id])
-    return active_projects[project_id]
+    orchestrator.run(proj)
+    return proj
 
 @app.post("/films/{project_id}/generate")
 def generate_film(project_id: str, bg_tasks: BackgroundTasks):
