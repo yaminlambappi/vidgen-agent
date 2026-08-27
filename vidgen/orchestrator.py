@@ -337,7 +337,13 @@ class Orchestrator:
             if p.status == FilmStatus.MASTERING:
                 paths, dialogue_tracks = self._download_edit_assets(p, root)
                 assembled = root / "assembled.mp4"
-                concatenate_shots(paths, str(assembled))
+                
+                # Get expected durations for all shots in sequence to ensure perfect alignment
+                shot_map = {sh.shot_id: sh for sc in p.scenes for sh in sc.shots}
+                expected_durations = [shot_map[sid].duration for sid in p.edit_plan.sequence]
+                
+                concatenate_shots(paths, str(assembled), expected_durations=expected_durations)
+                
                 final = root / "final_film.mp4"
                 final_mix(str(assembled), str(final),
                           str(root/"subtitles.srt"),

@@ -21,25 +21,56 @@ def validate_video(path:str, expected_duration:Optional[float]=None)->Dict:
     if int(video.get("width",0)) < 640 or int(video.get("height",0)) < 360: raise RuntimeError(f"Video too small: {path}")
     duration=float(p["format"].get("duration",0))
     if duration <= 0.5: raise RuntimeError(f"Invalid duration: {path}")
-    if expected_duration and abs(duration-expected_duration)>2.5: raise RuntimeError(f"Shot duration drift ({duration}s): {path}")
+    
+    # We report drift but no longer crash the pipeline for it here.
+    # The orchestrator and mastering stage will handle normalization.
+    drift = abs(duration - expected_duration) if expected_duration else 0
+    if expected_duration and drift > 5.0:
+        # Only crash if the drift is extreme (e.g. > 5s), suggesting a totally wrong asset.
+        raise RuntimeError(f"Extreme shot duration drift ({duration}s vs {expected_duration}s): {path}")
+    
     has_audio = any(x.get("codec_type")=="audio" for x in streams)
     if not has_audio:
         raise RuntimeError(f"Generated video has no audio stream: {path}")
-    return {"duration":duration,"width":video["width"],"height":video["height"],"codec":video["codec_name"],"has_audio":has_audio, "valid": True}
-def normalize_video(input_path:str,output_path:str):
-    run_ffmpeg(["-i",input_path,"-vf","scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p","-r",str(settings.FPS),"-c:v","libx264","-preset","veryfast","-crf","18","-c:a","aac","-ar","48000","-movflags","+faststart",output_path])
+    return {"duration":duration,"width":video["width"],"height":video["height"],"codec":video["codec_name"],"has_audio":has_audio, "valid": True, "drift": drift}
 
-def concatenate_shots(shot_files:List[str],output_path:str):
+def normalize_video(input_path:str, output_path:str, expected_duration:Optional[float]=None):
+    # Standard normalization for resolution, framerate, and codec.
+    # If expected_duration is provided, we also force the temporal length.
+    vf = f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+    args = ["-i", input_path]
+    
+    if expected_duration:
+        # tpad=stop_mode=clone:whole_duration=X will pad the end with the last frame if the video is short.
+        # -t X will trim the video if it is long.
+        vf += f",tpad=stop_mode=clone:whole_duration={expected_duration}"
+        # We also need to pad audio if it is shorter than the target duration.
+        # apad filter handles this.
+        args += ["-t", str(expected_duration)]
+        
+    run_ffmpeg([
+        *args, 
+        "-vf", vf, 
+        "-af", "apad",
+        "-r", str(settings.FPS), 
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", 
+        "-c:a", "aac", "-ar", "48000", 
+        "-movflags", "+faststart", 
+        output_path
+    ])
+
+def concatenate_shots(shot_files:List[str], output_path:str, expected_durations:Optional[List[float]]=None):
     if not shot_files: raise RuntimeError("No validated shots to edit")
     normalized=[]
     work_dir = Path(output_path).parent
     
     def process_shot(args):
         i, path = args
-        validate_video(path)
+        expected = expected_durations[i] if expected_durations else None
+        validate_video(path, expected)
         target = str(work_dir / f"normal_{i:03}.mp4")
-        if not Path(target).exists():
-            normalize_video(path, target)
+        # We always re-normalize if expected_duration is critical for alignment.
+        normalize_video(path, target, expected)
         return target
 
     print(f"  [MASTERING] Normalizing {len(shot_files)} shots in parallel...")
