@@ -13,6 +13,10 @@ class FilmStatus(str, Enum):
     GENERATING="generating"; EDITING="editing"; MASTERING="mastering"
     UPLOADING="uploading"; COMPLETED="completed"; FAILED="failed"
 
+class ProductionMode(str, Enum):
+    SHORT_FILM = "short_film"
+    PREMIUM_AUTOMOTIVE_AD = "premium_automotive_ad"
+
 class AssetType(str, Enum):
     VIDEO = "video"
     IMAGE = "image"
@@ -130,6 +134,20 @@ class MusicPlan(BaseModel):
     instrumentation: str = ""
     structure: str = ""
 
+class VoiceAssignment(BaseModel):
+    character_id: str = ""
+    voice_name: str = ""
+    speaking_rate: float = 0.85
+    pitch: float = -2.0
+    volume_gain_db: float = 0.0
+    performance_style: str = ""
+
+class VoiceBible(BaseModel):
+    assignments: Dict[str, VoiceAssignment] = Field(default_factory=dict)
+    narrator_voice: str = "en-US-Neural2-J"
+    narrator_speaking_rate: float = 0.85
+    narrator_pitch: float = -2.0
+
 class GenerationJob(BaseModel):
     project_id: str = ""
     shot_id: str = ""
@@ -158,6 +176,7 @@ class FilmProject(BaseModel):
     genre: str = ""
     language: str = ""
     aspect_ratio: str = "16:9"
+    production_mode: ProductionMode = ProductionMode.SHORT_FILM
     status: FilmStatus = FilmStatus.QUEUED
     progress: int = 0
     message: str = "Queued."
@@ -165,6 +184,7 @@ class FilmProject(BaseModel):
     character_bible: Optional[CharacterBible] = None
     world_bible: Optional[WorldBible] = None
     cinematic_bible: Optional[CinematicBible] = None
+    voice_bible: Optional[VoiceBible] = None
     scenes: List[Scene] = Field(default_factory=list)
     edit_plan: Optional[EditPlan] = None
     audio_plan: Optional[AudioPlan] = None

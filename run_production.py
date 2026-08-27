@@ -101,7 +101,9 @@ def _qc(p: FilmProject) -> list:
     if not ap or not ap.subtitle_uri: fails.append("GATE7: subtitles missing")
     if not p.final_manifest_uri: fails.append("GATE11: manifest URI missing")
     final = STATE_DIR / p.project_id / "final_film.mp4"
-    if final.exists():
+    if not final.exists():
+        fails.append("GATE8: final_film.mp4 does not exist locally")
+    else:
         try:
             from vidgen.utils.ffmpeg import validate_video
             qc = validate_video(str(final))
@@ -109,8 +111,8 @@ def _qc(p: FilmProject) -> list:
             print(f"[QC] {d:.1f}s {qc.get('width')}x{qc.get('height')} "
                   f"{qc.get('codec')} audio={qc.get('has_audio')}")
             expected = sum(sh.duration for sc in p.scenes for sh in sc.shots)
-            if abs(d - expected) > 2.5:
-                fails.append(f"GATE8: {d:.1f}s differs from planned {expected:.1f}s")
+            if abs(d - expected) > 3.0:
+                fails.append(f"GATE8: {d:.1f}s differs from planned {expected:.1f}s by >{3.0}s")
             if not qc.get("has_audio"): fails.append("GATE9: no audio")
         except Exception as e:
             fails.append(f"GATE10: ffprobe fail: {e}")

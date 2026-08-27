@@ -14,7 +14,7 @@ from vidgen.utils.ffmpeg import concatenate_shots, create_score, final_mix, vali
 from vidgen.agents import (ResearchAgent, StoryArchitectAgent, ScreenwriterAgent,
     CharacterDesignAgent, WorldDesignAgent, CinematographerAgent,
     StoryboardAgent, VoiceAgent, MusicAgent, EditorAgent, SubtitleAgent,
-    build_veo_generation_package)
+    VoiceDesignAgent, build_veo_generation_package)
 from vidgen.qc import QCMAgent
 
 _DET = ("404","not found","403","permission","invalid_argument","400","unsupported",
@@ -55,6 +55,7 @@ class Orchestrator:
         self.cinematog = CinematographerAgent()
         self.storyboarder = StoryboardAgent()
         self.voice = VoiceAgent()
+        self.voice_design = VoiceDesignAgent()
         self.music = MusicAgent()
         self.editor = EditorAgent()
         self.subtitles = SubtitleAgent()
@@ -125,8 +126,8 @@ class Orchestrator:
                 if critique["passed"]:
                     print(f"  [SHOT {shot.index:02d}] ✓ Accepted (QC Disabled). Duration: {validation_qc.get('duration','?')}s")
                     shot.generated_asset_uri = job.artifact_uri
-                    
-                    # Extract and upload a single frame for reference, but don't use it for QC.
+
+                    # Extract and upload a single frame for reference.
                     try:
                         extract_frames(str(local_path), str(frame_path.parent), f"frame_{shot.shot_id}", num_frames=1)
                         final_frame = root / f"frame_{shot.shot_id}_0.png"
@@ -137,9 +138,11 @@ class Orchestrator:
                     except Exception as e:
                         print(f"  [WARN] Frame extraction failed, continuing without it: {e}")
 
-                    # Keep final video asset
+                    # Rename local file to stable per-shot path (only if it exists —
+                    # in simulation/test the download mock may not create the file).
                     final_video = root / f"{shot.shot_id}.mp4"
-                    local_path.replace(final_video)
+                    if local_path.exists():
+                        local_path.replace(final_video)
                     return
                 else:
                     last_error = f"QC failed: {critique['feedback']}"
@@ -276,7 +279,8 @@ class Orchestrator:
                     self.storage.upload(str(research_path), f"projects/{p.project_id}/research.md")
 
                 if not p.story or not p.story.title:
-                    p.story = self.story_arch.design_story(p.topic, research)
+                    p.story = self.story_arch.design_story(
+                        p.topic, research, production_mode=p.production_mode)
                 print(f"  [STORY] {p.story.title}")
 
                 if not _bible_complete(p.world_bible):
@@ -290,6 +294,12 @@ class Orchestrator:
                 if not _bible_complete(p.character_bible):
                     p.character_bible = self.char_design.design_characters(p)
                 print(f"  [CHARS] {[c.name for c in p.character_bible.characters]}")
+
+                # Voice Bible — derive after characters are established; idempotent
+                if not p.voice_bible or not p.voice_bible.assignments:
+                    p.voice_bible = self.voice_design.design_voices(p)
+                    print(f"  [VOICE] {len(p.voice_bible.assignments)} voice assignments")
+
                 self.checkpoint(p)
 
                 self._set(p, FilmStatus.STORYBOARDING, "Screenplay + Storyboard", 20)

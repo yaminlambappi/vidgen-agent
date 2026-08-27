@@ -11,7 +11,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from fastapi.responses import FileResponse
 
 from vidgen.config import settings
-from vidgen.models import FilmProject, FilmStatus
+from vidgen.models import FilmProject, FilmStatus, ProductionMode
 from vidgen.orchestrator import Orchestrator
 from pathlib import Path
 import hashlib, json
@@ -32,6 +32,7 @@ class FilmCreateRequest(BaseModel):
     genre: str = Field(..., min_length=3)
     language: str = Field("English")
     aspect_ratio: str = Field("16:9")
+    production_mode: ProductionMode = Field(ProductionMode.SHORT_FILM)
 
 
 def _submit_cloud_run_job(project_id: str) -> dict:
@@ -131,7 +132,7 @@ def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
         raise HTTPException(status_code=400, detail=str(e))
 
     # Compute request fingerprint for idempotency
-    fp_src = f"{data['topic']}|{data['duration_seconds']}|{data['genre']}|{data['language']}|{data['aspect_ratio']}"
+    fp_src = f"{data['topic']}|{data['duration_seconds']}|{data['genre']}|{data['language']}|{data['aspect_ratio']}|{data['production_mode']}"
     fingerprint = hashlib.sha256(fp_src.encode()).hexdigest()
 
     # Check persistent fingerprint index in GCS
@@ -158,6 +159,7 @@ def create_film_api(payload: FilmCreateRequest, bg: BackgroundTasks):
         genre=data["genre"],
         language=data["language"],
         aspect_ratio=data["aspect_ratio"],
+        production_mode=ProductionMode(data["production_mode"]),
         request_fingerprint=fingerprint,
     )
 

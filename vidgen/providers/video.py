@@ -54,9 +54,14 @@ class VeoVideoGenerator(VideoGenerator):
             uri = asset.get("uri", "")
             if not uri.startswith("gs://"):
                 raise ValueError(f"Veo reference must be a GCS URI, got {uri!r}")
+            role = asset.get("metadata", {}).get("role", "")
+            # Map role → Veo reference type.
+            # "SUBJECT" anchors character identity; "STYLE" anchors cinematic look.
+            # Unknown roles default to "SUBJECT".
+            ref_type = "STYLE" if role in ("cinematic_style", "location_identity") else "SUBJECT"
             references.append(types.VideoGenerationReferenceImage(
                 image=types.Image(gcs_uri=uri, mime_type=asset.get("metadata", {}).get("mime_type", "image/png")),
-                reference_type="asset"))
+                reference_type=ref_type))
         if references:
             args["reference_images"] = references
         supported = set(types.GenerateVideosConfig.model_fields)
