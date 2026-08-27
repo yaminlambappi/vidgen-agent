@@ -14,8 +14,9 @@ from vidgen.utils.ffmpeg import concatenate_shots, create_score, final_mix, vali
 from vidgen.agents import (ResearchAgent, StoryArchitectAgent, ScreenwriterAgent,
     CharacterDesignAgent, WorldDesignAgent, CinematographerAgent,
     StoryboardAgent, VoiceAgent, MusicAgent, EditorAgent, SubtitleAgent,
-    VoiceDesignAgent, build_veo_generation_package)
+    VoiceDesignAgent, ContentIntentAgent, build_veo_generation_package)
 from vidgen.qc import QCMAgent
+from vidgen.utils.retry import RateLimitExhausted
 
 _DET = ("404","not found","403","permission","invalid_argument","400","unsupported",
         "does not have access","model was not found","401","unauthenticated","deterministic:")
@@ -48,6 +49,7 @@ class Orchestrator:
         self.storage = get_storage_provider()
         self.video_gen = get_video_generator()
         self.researcher = ResearchAgent()
+        self.intent_agent = ContentIntentAgent()
         self.story_arch = StoryArchitectAgent()
         self.screenwriter = ScreenwriterAgent()
         self.char_design = CharacterDesignAgent()
@@ -89,11 +91,9 @@ class Orchestrator:
 
         for attempt in range(settings.RETRY_ATTEMPTS):
             shot.attempts += 1
-            # Build rich self-contained Veo prompt with full identity and any QC feedback
             gen_package = build_veo_generation_package(shot, p, feedback, prev_shot)
             prompt = gen_package["prompt"]
-            
-            shot.veo_prompt = prompt # Log the exact prompt used
+            shot.veo_prompt = prompt
             shot.prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
             self.checkpoint(p)
 
@@ -102,16 +102,25 @@ class Orchestrator:
                 prompt=prompt,
                 reference_assets=gen_package["reference_assets"],
                 output_uri=output_uri,
-                duration=shot.duration, 
-                project_id=p.project_id, 
+                duration=shot.duration,
+                project_id=p.project_id,
                 shot_id=shot.shot_id)
+
+            # Veo rate-limit exhausted — raise immediately so orchestrator can persist state
+            if job.status == "rate_limit_exhausted":
+                raise RateLimitExhausted(
+                    provider="veo",
+                    model=settings.VEO_MODEL,
+                    operation=f"generate_shot/{shot.shot_id}",
+                    attempts=settings.VIDGEN_MAX_RETRIES,
+                    last_error=job.error or "rate_limit_exhausted",
+                )
 
             if job.status == "completed" and job.artifact_uri:
                 local_path = root / f"{shot.shot_id}_attempt_{attempt}.mp4"
                 frame_path = root / f"frame_{shot.shot_id}_attempt_{attempt}.png"
                 self.storage.download(job.artifact_uri, str(local_path))
-                
-                # Basic validation first
+
                 validation_qc = validate_video(str(local_path), shot.duration)
                 if not validation_qc.get("valid"):
                     last_error = f"Invalid video file generated: {validation_qc.get('error', 'unknown error')}"
@@ -119,15 +128,14 @@ class Orchestrator:
                     feedback = self.qcm_agent.generate_feedback_prompt(shot, {"passed": False, "feedback": [last_error]})
                     continue
 
-                # QC is disabled for now to allow full pipeline execution.
+                # QC disabled to allow full pipeline execution through.
                 critique = {"passed": True, "feedback": ["QC checks disabled."]}
                 shot.qc.update(critique)
 
                 if critique["passed"]:
-                    print(f"  [SHOT {shot.index:02d}] ✓ Accepted (QC Disabled). Duration: {validation_qc.get('duration','?')}s")
+                    print(f"  [SHOT {shot.index:02d}] ✓ Accepted. Duration: {validation_qc.get('duration','?')}s")
                     shot.generated_asset_uri = job.artifact_uri
 
-                    # Extract and upload a single frame for reference.
                     try:
                         extract_frames(str(local_path), str(frame_path.parent), f"frame_{shot.shot_id}", num_frames=1)
                         final_frame = root / f"frame_{shot.shot_id}_0.png"
@@ -138,8 +146,6 @@ class Orchestrator:
                     except Exception as e:
                         print(f"  [WARN] Frame extraction failed, continuing without it: {e}")
 
-                    # Rename local file to stable per-shot path (only if it exists —
-                    # in simulation/test the download mock may not create the file).
                     final_video = root / f"{shot.shot_id}.mp4"
                     if local_path.exists():
                         local_path.replace(final_video)
@@ -156,11 +162,11 @@ class Orchestrator:
                 ec = _cls(last_error)
                 if ec == "deterministic":
                     raise RuntimeError(f"Shot {shot.shot_id} deterministic fail: {last_error}")
-                
+
                 wait_time = 2 ** (attempt + 1)
                 print(f"  [SHOT {shot.index:02d}] attempt {attempt+1} {ec}: {last_error[:100]} — retry in {wait_time}s")
                 time.sleep(wait_time)
-        
+
         raise RuntimeError(f"Shot {shot.shot_id} failed all {settings.RETRY_ATTEMPTS} attempts. Last error: {last_error}")
 
     def _build_audio(self, p: FilmProject, root: Path) -> None:
@@ -351,7 +357,7 @@ class Orchestrator:
         try:
             # PLANNING (resumable — skip completed bibles and canonical assets)
             if p.status == FilmStatus.QUEUED:
-                self._set(p, FilmStatus.PLANNING, "Research + Story + World + Characters + Cinematics", 5)
+                self._set(p, FilmStatus.PLANNING, "Research + Content Understanding + Story + World + Characters + Cinematics", 5)
                 research_path = root / "research.md"
                 if research_path.exists():
                     research = research_path.read_text()
@@ -360,9 +366,18 @@ class Orchestrator:
                     research_path.write_text(research)
                     self.storage.upload(str(research_path), f"projects/{p.project_id}/research.md")
 
+                # Content Intent — universal understanding of what this production is about
+                if not p.content_intent or not p.content_intent.primary_subject:
+                    p.content_intent = self.intent_agent.understand(p.topic, p.production_mode)
+                    print(f"  [INTENT] primary={p.content_intent.primary_subject} "
+                          f"type={p.content_intent.primary_subject_type} "
+                          f"genre={p.content_intent.genre}")
+
                 if not p.story or not p.story.title:
                     p.story = self.story_arch.design_story(
-                        p.topic, research, production_mode=p.production_mode)
+                        p.topic, research,
+                        production_mode=p.production_mode,
+                        content_intent=p.content_intent)
                 print(f"  [STORY] {p.story.title}")
 
                 if not _bible_complete(p.world_bible):
@@ -473,6 +488,13 @@ class Orchestrator:
                     str(mp), f"projects/{p.project_id}/deliverables/manifest.json")
                 self._set(p, FilmStatus.COMPLETED, f"Film complete: {video_uri}", 100)
 
+        except RateLimitExhausted as exc:
+            p.status = FilmStatus.FAILED
+            p.message = f"Rate limit exhausted: {exc}"
+            p.last_error_type = "RATE_LIMIT_EXHAUSTED"
+            p.last_error_message = str(exc)[:500]
+            self.checkpoint(p)
+            raise
         except Exception as exc:
             p.status = FilmStatus.FAILED
             p.message = f"Pipeline failure: {exc}"

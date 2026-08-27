@@ -1,7 +1,7 @@
 """
-Autonomous filmmaking agents — Gemini text only, no image generation.
-All character/location identity embedded in rich Veo prompts.
-Upgraded for festival-grade quality.
+Autonomous filmmaking agents — universal cinematic production engine.
+Understands any subject: character, product, vehicle, location, object, concept.
+Shot objectives drive prompt compilation — never generic paragraph prompts.
 """
 from __future__ import annotations
 import time
@@ -15,11 +15,12 @@ from vidgen.config import settings
 from vidgen.models import (
     FilmProject, StorySpec, CharacterBible, WorldBible, CinematicBible,
     Scene, Shot, MusicPlan, EditPlan, Character, Location, AssetReference, AssetType,
-    ProductionMode, VoiceAssignment, VoiceBible,
+    ProductionMode, VoiceAssignment, VoiceBible, ContentIntent, ShotObjective,
 )
 from vidgen.providers.image import GeminiImageGenerator
 from vidgen.providers import get_storage_provider
 from vidgen.utils.references import ensure_character_reference, ensure_location_reference
+from vidgen.utils.retry import call_with_retry, RateLimitExhausted
 
 _DET = ("400","404","403","invalid_argument","unsupported","not found",
         "does not have access","unauthenticated","permission denied")
@@ -41,29 +42,38 @@ class BaseAgent:
         return self._client
 
     def llm(self, prompt: str, system: str = "", schema: Type[BaseModel] | None = None) -> Any:
-        # Upgraded temperature for more creative but grounded generation
+        """
+        Call the Gemini LLM with the shared retry policy.
+        Deterministic errors (400/403/404) are never retried.
+        Transient errors (429/500/503) use exponential backoff.
+        """
         cfg = {"system_instruction": system, "temperature": 0.7, "max_output_tokens": 16384}
         if schema:
             cfg.update(response_mime_type="application/json", response_schema=schema)
-        last = None
-        for attempt in range(settings.RETRY_ATTEMPTS):
-            try:
-                r = self.client.models.generate_content(
-                    model=self.model, contents=prompt,
-                    config=types.GenerateContentConfig(**cfg))
-                if schema:
-                    if getattr(r, "parsed", None) is not None:
-                        return schema.model_validate(r.parsed)
-                    if r.text:
-                        return schema.model_validate_json(r.text)
-                    raise RuntimeError("Gemini: no structured output")
-                return r.text or ""
-            except Exception as exc:
-                if _is_det(str(exc)):
-                    raise RuntimeError(f"Deterministic Gemini failure: {exc}")
-                last = exc
-                time.sleep(2 ** attempt)
-        raise RuntimeError(f"Gemini failed: {last}")
+
+        def _call():
+            r = self.client.models.generate_content(
+                model=self.model, contents=prompt,
+                config=types.GenerateContentConfig(**cfg))
+            if schema:
+                if getattr(r, "parsed", None) is not None:
+                    return schema.model_validate(r.parsed)
+                if r.text:
+                    return schema.model_validate_json(r.text)
+                raise RuntimeError("Gemini: no structured output")
+            return r.text or ""
+
+        try:
+            return call_with_retry(
+                fn=_call,
+                provider="gemini-llm",
+                model=self.model,
+                operation="generate_content",
+            )
+        except RateLimitExhausted:
+            raise  # Let callers (orchestrator) handle rate limit exhaustion
+        except RuntimeError:
+            raise
 
 
 class ResearchAgent(BaseAgent):
@@ -80,6 +90,61 @@ class ResearchAgent(BaseAgent):
             return r.text or "Research unavailable."
         except Exception:
             return "Research unavailable — proceeding with general knowledge."
+
+
+class ContentIntentAgent(BaseAgent):
+    """
+    First agent to run. Derives a ContentIntent from the raw topic.
+
+    This is the universal content understanding layer.
+    The primary subject may be a person, character, vehicle, product, building,
+    location, animal, object, environment, event, or abstract concept visualised.
+    It is NEVER assumed to be any particular type.
+
+    Postconditions:
+        - Returns ContentIntent with all key fields non-empty
+        - primary_subject_type is one of the canonical values
+        - prohibited_outcomes is non-empty (always generate at least one)
+    """
+
+    def understand(self, topic: str, production_mode: ProductionMode) -> ContentIntent:
+        mode_hint = {
+            ProductionMode.SHORT_FILM: (
+                "This is a SHORT FILM. Characters, emotions, and narrative are central. "
+                "The primary subject is almost certainly a person or character."
+            ),
+            ProductionMode.PREMIUM_AUTOMOTIVE_AD: (
+                "This is a PREMIUM COMMERCIAL ADVERTISEMENT. "
+                "The primary subject may be a vehicle, product, or brand concept. "
+                "Do NOT assume vehicle — derive from the topic. "
+                "If the topic describes a vehicle, make it primary. "
+                "If the topic describes a person or emotion, they may be primary."
+            ),
+        }[production_mode]
+
+        return self.llm(
+            f"TOPIC: {topic}\n\n"
+            f"PRODUCTION TYPE HINT: {mode_hint}\n\n"
+            "Analyse the topic and determine the COMPLETE content intent for this production.\n\n"
+            "For primary_subject_type, choose EXACTLY ONE of:\n"
+            "  person | character | vehicle | product | location | animal | object | environment | concept\n\n"
+            "For narrative_purpose, describe what story/message the content serves.\n"
+            "For emotional_objective, describe how the audience should feel after watching.\n"
+            "For visual_objective, describe the dominant visual impression.\n"
+            "For realism_requirement, choose: photorealistic | stylised | abstract\n"
+            "For shot_level_objectives, list the key types of shots needed (e.g. 'establish setting', "
+            "'show product detail', 'capture character emotion', 'reveal information').\n"
+            "For prohibited_outcomes, list what would make shots FAIL (e.g. "
+            "'subject not visible', 'wrong character', 'generic background').\n"
+            "For continuity_requirements, list what must stay consistent (e.g. 'character wardrobe', "
+            "'vehicle colour', 'time of day').",
+            "You are a creative director. Analyse the topic and return JSON with these exact fields: "
+            "primary_subject, primary_subject_type, secondary_subjects (list), characters (list), "
+            "locations (list), narrative_purpose, emotional_objective, visual_objective, "
+            "genre, tone, target_audience, brand_product_requirements, realism_requirement, "
+            "continuity_requirements (list), shot_level_objectives (list), prohibited_outcomes (list).",
+            ContentIntent
+        )
 
 
 class VoiceDesignAgent(BaseAgent):
@@ -141,37 +206,55 @@ class VoiceDesignAgent(BaseAgent):
 
 class StoryArchitectAgent(BaseAgent):
     def design_story(self, topic: str, research: str,
-                     production_mode: "ProductionMode" = None) -> StorySpec:
+                     production_mode: "ProductionMode" = None,
+                     content_intent: "ContentIntent | None" = None) -> StorySpec:
+        """
+        Universal story design — works for any content type.
+        Uses ContentIntent as the primary driver; production_mode provides supplementary context.
+        """
         if production_mode is None:
             production_mode = ProductionMode.SHORT_FILM
-        mode_context = {
-            ProductionMode.SHORT_FILM: (
-                "This is a SHORT FILM for international festival submission. "
-                "Cinematic inspiration: Christopher Nolan (temporal structure, moral weight), "
-                "James Cameron (spectacle grounded in human stakes). "
-                "Performance quality: Cillian Murphy (internality, restraint), "
-                "Christian Bale (physical transformation, commitment), "
-                "Tom Hardy (physicality, subtext). "
-                "Generate ORIGINAL fictional characters. Do NOT reference or reproduce real people."
-            ),
-            ProductionMode.PREMIUM_AUTOMOTIVE_AD: (
-                "This is a PREMIUM AUTOMOTIVE ADVERTISEMENT. "
-                "The hero product is the vehicle. Human characters exist to contextualise the vehicle's identity. "
-                "Tone: aspirational, cinematic, futuristic. Pacing: precise, commercial, punchy. "
-                "Every shot must showcase vehicle materials, reflections, motion physics, or silhouette. "
-                "No generic car-ad tropes. Aim for art-directed brand filmmaking."
-            ),
-        }[production_mode]
+
+        # Build intent-driven context rather than hard-coded mode strings
+        if content_intent:
+            intent_context = (
+                f"PRIMARY SUBJECT: {content_intent.primary_subject} "
+                f"(type: {content_intent.primary_subject_type})\n"
+                f"NARRATIVE PURPOSE: {content_intent.narrative_purpose}\n"
+                f"EMOTIONAL OBJECTIVE: {content_intent.emotional_objective}\n"
+                f"GENRE: {content_intent.genre or 'derived from topic'}\n"
+                f"TONE: {content_intent.tone}\n"
+                f"AUDIENCE: {content_intent.target_audience}\n"
+            )
+            if content_intent.brand_product_requirements:
+                intent_context += f"BRAND/PRODUCT REQUIREMENTS: {content_intent.brand_product_requirements}\n"
+        else:
+            # Fallback for backward compatibility — should not be reached in normal operation
+            intent_context = {
+                ProductionMode.SHORT_FILM: (
+                    "This is a SHORT FILM for international festival submission. "
+                    "Cinematic inspiration: Christopher Nolan (temporal structure, moral weight), "
+                    "James Cameron (spectacle grounded in human stakes). "
+                    "Performance quality target: internality, restraint, physicality, subtext. "
+                    "Generate ORIGINAL fictional characters. Do NOT reference or reproduce real people."
+                ),
+                ProductionMode.PREMIUM_AUTOMOTIVE_AD: (
+                    "This is a PREMIUM AUTOMOTIVE ADVERTISEMENT. "
+                    "Tone: aspirational, cinematic, precise. "
+                    "No generic automotive tropes. Aim for art-directed brand filmmaking."
+                ),
+            }[production_mode]
+
         return self.llm(
-            f"Topic: {topic}\n\nResearch (focus on emotional/philosophical):\n{research[:4000]}\n\n"
-            f"Production Mode Context:\n{mode_context}\n\n"
-            "Create a 3-act story for a discerning international audience. "
-            "The story must feature three fictional, deeply interconnected characters whose lives reveal the topic's core tensions. "
-            "Avoid cliche. Aim for moral ambiguity and emotional complexity.\n"
-            "ACT I: Introduce the world and characters. Present the central conflict subtly, through character actions, not exposition.\n"
-            "ACT II: Escalate the conflict. The characters face profound internal and external challenges, forcing them to confront their core beliefs.\n"
-            "ACT III: A powerful, non-obvious climax. Resolve the conflict in a way that is both surprising and inevitable, leaving the audience with a lingering question, not a simple answer.",
-            "You are a master screenwriter. Return JSON: title (evocative, not literal), logline (concise, poetic), theme (a universal question), genre (e.g., 'Psychological Drama'), three_act_structure (detailed, emotionally resonant).",
+            f"Topic: {topic}\n\nResearch:\n{research[:4000]}\n\n"
+            f"Content Intent:\n{intent_context}\n\n"
+            "Create a 3-act story structure appropriate for this content.\n"
+            "ACT I: Establish the world, subject, and central tension — show, don't tell.\n"
+            "ACT II: Escalate. Force the subject/characters to confront their core challenge.\n"
+            "ACT III: Resolve in a way that is both surprising and inevitable.\n"
+            "The story must serve the primary subject and emotional objective above.",
+            "You are a master director. Return JSON: title (evocative), logline (≤ 2 sentences), "
+            "theme (a universal question), genre, three_act_structure (detailed).",
             StorySpec)
 
 
@@ -241,60 +324,91 @@ class WorldDesignAgent(BaseAgent):
 class CinematographerAgent(BaseAgent):
     def design_cinematics(self, p: FilmProject) -> CinematicBible:
         """
-        Returns a CinematicBible with all five pillars non-empty, tuned to production_mode.
-
-        Preconditions:
-            - p.story.title and p.story.theme are non-empty
-            - p.production_mode is set
+        Universal cinematic bible — derived from ContentIntent and StorySpec.
+        Works for any content type without hard-coded genre rules.
 
         Postconditions:
-            - SHORT_FILM: camera_language forbids drone shots and generic coverage
-            - PREMIUM_AUTOMOTIVE_AD: color_palette includes metallic/reflective language;
-              camera_language specifies hero product framing rules
-            - All five pillars (color_palette, lighting, camera_language, texture,
-              editing_rhythm) are non-empty strings
+            - All five pillars non-empty
+            - camera_language contains explicit prohibitions and requirements
+            - color_palette contains psychological/functional reasoning
         """
+        intent = p.content_intent
         mode = getattr(p, "production_mode", ProductionMode.SHORT_FILM)
 
-        if mode == ProductionMode.PREMIUM_AUTOMOTIVE_AD:
-            mode_prompt = (
-                f'Craft a cinematic bible for a PREMIUM AUTOMOTIVE ADVERTISEMENT: "{p.story.title}".\n'
-                "The hero subject is the vehicle. Every visual choice must flatter the vehicle.\n\n"
-                "Requirements:\n"
-                "1. color_palette: Metallic and reflective language — deep blacks, polished chrome highlights, "
-                "clearcoat paint depth, cool whites that catch on aerodynamic surfaces.\n"
-                "2. lighting: Studio-grade controlled lighting. Three-point setups for hero product shots. "
-                "Practical ambient light for environmental sequences. No blown highlights on bodywork.\n"
-                "3. camera_language: FORBIDDEN: drone shots, hand-held wobble, Dutch angles. "
-                "REQUIRED: Low hero angles flattering vehicle silhouette. "
-                "Tracking shots that reveal bodywork as sculpture. "
-                "Macro detail inserts. Slow dolly approaches emphasising material quality.\n"
-                "4. texture: Ultra-sharp 8K studio sharpness. No grain. Deep focus on vehicle surfaces. "
-                "Shallow DOF only for interior cockpit macro details.\n"
-                "5. editing_rhythm: Precise commercial pacing. 3–6 second cuts during action sequences. "
-                "Hold on product reveals. Typography and tagline pacing if applicable."
+        # Build subject-specific guidance from intent rather than mode switch
+        subject_guidance = ""
+        if intent:
+            pst = intent.primary_subject_type
+            if pst == "vehicle":
+                subject_guidance = (
+                    "The hero subject is a vehicle. Visual choices must flatter it: "
+                    "hero angles, material quality, surface reflections, kinetic energy."
+                )
+            elif pst in ("product", "object"):
+                subject_guidance = (
+                    f"The hero subject is a {pst}. Visual choices must showcase its "
+                    "materials, scale, texture, and function."
+                )
+            elif pst in ("person", "character"):
+                subject_guidance = (
+                    "Human performance and internal emotional life are central. "
+                    "Camera works with the actor, not around them."
+                )
+            elif pst == "location":
+                subject_guidance = (
+                    "The location itself is the subject. Architecture, atmosphere, "
+                    "and environmental detail are paramount."
+                )
+            elif pst == "environment":
+                subject_guidance = (
+                    "Environment and atmosphere ARE the subject. Natural phenomena, "
+                    "light, texture, and scale carry the narrative."
+                )
+            else:
+                subject_guidance = (
+                    f"The primary subject is {intent.primary_subject}. "
+                    "Frame and compose to make it unmistakably the focal point."
+                )
+            subject_guidance += (
+                f"\nVisual objective: {intent.visual_objective}"
+                f"\nEmotional objective: {intent.emotional_objective}"
+                f"\nProhibited outcomes: {', '.join(intent.prohibited_outcomes[:3])}"
+                if intent.prohibited_outcomes else ""
             )
-        else:
-            mode_prompt = (
-                f'Craft a unique, auteur cinematic bible for the short film "{p.story.title}".\n'
-                "Style: Social realism meets poetic visual storytelling. "
-                "The camera is an intimate observer, not a neutral one.\n\n"
-                "Requirements:\n"
-                "1. color_palette: A specific, restrictive palette with clear psychological reasoning.\n"
-                "2. lighting: A strict lighting philosophy motivated by natural or practical sources.\n"
-                "3. camera_language: FORBIDDEN: drone shots, generic wide establishing shots, "
-                "unmotivated slow-motion, lens flares for style alone, Dutch angles. "
-                "REQUIRED: Eye-level handheld or locked-off compositions. "
-                "Every camera move must have a specific narrative purpose.\n"
-                "4. texture: The tactile quality of the image — grain, focus philosophy, depth of field rules.\n"
-                "5. editing_rhythm: Pacing and flow — cut rationale, hold lengths, scene transitions."
+
+        mode_guidance = {
+            ProductionMode.SHORT_FILM: (
+                "FORBIDDEN camera choices: drone shots, generic establishing wides with no character, "
+                "unmotivated slow motion, lens flares for decoration, Dutch angles. "
+                "REQUIRED: Every camera decision must have a specific narrative justification."
+            ),
+            ProductionMode.PREMIUM_AUTOMOTIVE_AD: (
+                "FORBIDDEN camera choices: shaky hand-held, Dutch angles, "
+                "anything that obscures the primary subject's hero angles. "
+                "REQUIRED: Low angles that flatter silhouettes, tracking shots revealing surfaces, "
+                "macro detail inserts showing materials."
+            ),
+        }[mode]
+
+        story_context = ""
+        if p.story:
+            story_context = (
+                f'Film/Content: "{p.story.title}"\n'
+                f"Theme: {p.story.theme}\n"
+                f"Genre: {p.story.genre}\n"
             )
 
         return self.llm(
-            mode_prompt,
+            f"{story_context}"
+            f"Subject guidance: {subject_guidance}\n\n"
+            "Define a unique, precise cinematic identity:\n"
+            "1. color_palette: Specific palette with clear psychological/functional reasoning.\n"
+            "2. lighting: A strict philosophy with source, quality, and contrast rules.\n"
+            f"3. camera_language: Rules of camera. INCLUDE: {mode_guidance}\n"
+            "4. texture: Grain, sharpness, DOF philosophy — serves the subject.\n"
+            "5. editing_rhythm: Cut rationale, hold lengths, pacing appropriate to content.",
             "You are a world-class Director of Photography. Return JSON. "
-            "No generic terms. Every choice must have a clear, specific artistic purpose. "
-            "All five fields must be non-empty.",
+            "No generic terms. Every choice must have clear purpose. All five fields non-empty.",
             CinematicBible)
 
 
@@ -329,45 +443,58 @@ class ScreenwriterAgent(BaseAgent):
 
 class StoryboardAgent(BaseAgent):
     def design_shots(self, scene: Scene, p: FilmProject) -> List[Shot]:
+        """
+        Designs shots for a scene, deriving a ShotObjective for each shot before
+        building the shot specification. The objective drives composition decisions
+        rather than generic cinematic defaults.
+        """
         n = settings.SHOTS_PER_SCENE
-        chars = p.character_bible.characters
-        loc = next((l for l in p.world_bible.locations if l.location_id == scene.location_id), None)
+        chars = p.character_bible.characters if p.character_bible else []
+        locs = p.world_bible.locations if p.world_bible else []
+        loc = next((l for l in locs if l.location_id == scene.location_id), None)
         loc_desc = f"{loc.name}: {loc.description} | {loc.lighting}" if loc else scene.location_id
         char_block = "\n".join(
-            f"  ID={c.character_id} NAME={c.name}: {c.physical_description} | Wardrobe: {c.wardrobe}" for c in chars)
+            f"  ID={c.character_id} NAME={c.name}: {c.physical_description} | Wardrobe: {c.wardrobe}"
+            for c in chars) or "  No named characters"
         cine = p.cinematic_bible
+
+        # Build intent-aware context
+        intent = p.content_intent
+        intent_block = ""
+        if intent:
+            intent_block = (
+                f"\nPRIMARY SUBJECT: {intent.primary_subject} (type: {intent.primary_subject_type})"
+                f"\nSHOT LEVEL OBJECTIVES: {', '.join(intent.shot_level_objectives)}"
+                f"\nPROHIBITED OUTCOMES: {', '.join(intent.prohibited_outcomes[:3])}"
+                f"\nCONTINUITY: {', '.join(intent.continuity_requirements[:3])}"
+            )
 
         class Out(BaseModel):
             shots: List[Shot]
 
         r = self.llm(
-            f'Design EXACTLY {n} shots for Scene {scene.index}: "{scene.title}" ({scene.dramatic_purpose})\n'
+            f'Design EXACTLY {n} shots for Scene {scene.index}: "{scene.title}"\n'
+            f"Dramatic purpose: {scene.dramatic_purpose}\n"
             f"Location: {loc_desc}\n"
             f"Characters:\n{char_block}\n"
-            f"Cinematic Bible: palette={cine.color_palette} | lighting={cine.lighting} | camera={cine.camera_language} | texture={cine.texture}\n\n"
-            f"SHOT SEQUENCE PHILOSOPHY ({n} shots):\n"
-            "Follow a rigorous visual grammar. Start wide to establish context and slowly move closer to characters to build intimacy and tension. Use composition to reflect power dynamics. Every shot must serve the scene's dramatic purpose.\n"
-            "Example flow: Establishing Wide -> Medium on action -> Close-up on face -> Insert detail -> Close-up on reaction -> Medium two-shot -> Hold on a final, meaningful wide.\n\n"
-            "Each of the {n} shots MUST include ALL fields with no exceptions:\n"
-            "- shot_type: (e.g., 'extreme wide', 'medium close-up', 'insert')\n"
-            "- subject: The precise focal point of the shot.\n"
-            "- action: The specific physical activity occurring. Present tense.\n"
-            "- camera: Position and angle (e.g., 'low angle, looking up').\n"
-            "- lens: (e.g., '24mm wide-angle', '85mm portrait')\n"
-            "- movement: (e.g., 'static on tripod', 'subtle handheld drift', 'slow dolly push-in')\n"
-            "- composition: (e.g., 'rule of thirds, character on left', 'deep focus with subject in foreground')\n"
-            "- lighting: Precise source and quality (e.g., 'single key light from a window, creating chiaroscuro').\n"
-            "- atmosphere: The sensory mood (e.g., 'hazy from smoke, sound of distant sirens').\n"
-            "- character_ids: List of character_id strings. Empty if none.\n"
-            "- emotional_direction: A specific, actionable note for the actor (e.g., 'tries to appear confident, but her trembling hands betray her fear').\n"
-            "- performance_objective: What the performer is trying to get in this moment.\n"
-            "- performance_subtext: What they conceal or cannot say.\n"
-            "- physical_behavior: Specific hands, posture, breath, facial behavior and pacing.\n"
-            "- eyelines: Exact focus and interaction eyelines.\n"
-            "- sound: Key ambient sounds to be captured.\n"
-            "- transition: The reason for the cut (e.g., 'cut on action', 'match cut to a similar shape').\n"
-            "- duration: An integer number of seconds for the shot's length, between 4 and 12, based on the shot's creative purpose.\n",
-            f"You are a visionary director. Return JSON array of exactly {n} shots. Every field is mandatory and must be specific and cinematic.",
+            f"Cinematic Bible: palette={cine.color_palette} | lighting={cine.lighting} | "
+            f"camera={cine.camera_language} | texture={cine.texture}\n"
+            f"{intent_block}\n\n"
+            "SHOT DESIGN RULES:\n"
+            "- Every shot must have an explicit visual OBJECTIVE (what the audience must see/feel)\n"
+            "- Subject visibility is determined by the shot objective, not a fixed rule\n"
+            "- Sequence shots to build narrative momentum\n"
+            "- Performance direction must be specific and actionable\n\n"
+            f"Each of the {n} shots MUST include ALL fields:\n"
+            "- shot_type, subject, action, camera, lens, movement, composition\n"
+            "- lighting, atmosphere, character_ids (list), emotional_direction\n"
+            "- performance_objective, performance_subtext, physical_behavior, eyelines\n"
+            "- sound, transition\n"
+            "- duration (integer 4–12 seconds based on shot purpose)\n"
+            "- shot_objective: an object with fields: what_must_audience_see, primary_subject, "
+            "  subject_action, where, story_beat, continuity_requirements (list), "
+            "  must_not_lose (list), camera_rationale, lighting_rationale, failure_conditions (list)\n",
+            f"You are a visionary director. Return JSON with {n} shots. Every field mandatory and specific.",
             Out)
 
         shots = r.shots[:n]
@@ -375,6 +502,9 @@ class StoryboardAgent(BaseAgent):
             shot.index = i + 1
             shot.shot_id = f"{scene.scene_id}_SH{i+1:02d}"
             shot.location_id = scene.location_id
+            # Ensure shot_objective has shot_id set
+            if shot.shot_objective:
+                shot.shot_objective.shot_id = shot.shot_id
         return shots
 
 
@@ -539,13 +669,28 @@ def _srt(s: float) -> str:
 
 def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "", previous_shot: Shot | None = None) -> dict:
     """
-    Construct a rich, self-contained Veo generation package from shot + Film Bible.
+    Hierarchical structured Veo prompt compiler.
+
+    Prompt section priority order (A → J):
+      A. PROJECT IMMUTABLES    — realism, production rules, format
+      B. STORY CONTEXT         — why this shot exists in the narrative
+      C. SUBJECT IDENTITY      — the exact person/product/object/character
+      D. SHOT OBJECTIVE        — the single most important visual outcome
+      E. ACTION                — what the subject is doing
+      F. ENVIRONMENT           — only what is necessary to support the shot
+      G. CAMERA                — framing, lens, movement, composition
+      H. LIGHTING              — appropriate to scene and continuity
+      I. CONTINUITY            — what must match previous/next shots
+      J. NEGATIVE CONSTRAINTS  — specific failure modes that would invalidate the shot
+
+    Intent → subject → action → continuity → composition → environment → style
 
     Postconditions:
-        - Returns dict with keys 'prompt' (str) and 'reference_assets' (List[dict])
+        - Returns dict with 'prompt' (str) and 'reference_assets' (List[dict])
         - All reference_asset URIs start with 'gs://'
-        - PREMIUM_AUTOMOTIVE_AD mode: prompt contains 'AUTOMOTIVE MANDATE'
         - Does not mutate shot, p, or previous_shot
+        - PREMIUM_AUTOMOTIVE_AD mode: prompt contains 'AUTOMOTIVE MANDATE'
+        - Prompt sections are ordered by priority, not aesthetic preference
     """
     loc = next((l for l in (p.world_bible.locations if p.world_bible else [])
                 if l.location_id == shot.location_id), None)
@@ -553,13 +698,20 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
                      if c.character_id in shot.character_ids]
     cine = p.cinematic_bible
     mode = getattr(p, "production_mode", ProductionMode.SHORT_FILM)
+    intent = getattr(p, "content_intent", None)
+    obj = shot.shot_objective  # may be None on legacy/test shots
 
-    parts = [
-        "CINEMATIC FILM SHOT. 8K. Photorealistic. Emotionally resonant. No text, titles, watermarks, logos.",
-        "This is for a serious, award-winning cinematic production."
-    ]
+    parts: List[str] = []
 
-    # QC corrective feedback (prepended so the model addresses it first)
+    # ── A. PROJECT IMMUTABLES ────────────────────────────────────────────────
+    realism = "photorealistic" if not intent else intent.realism_requirement or "photorealistic"
+    parts.append(
+        f"PHOTOGRAPHIC FILM SHOT. {realism.upper()}. 8K resolution. "
+        "No text overlays, watermarks, titles, or logos. "
+        "Single continuous shot — no montage, no cuts within the shot."
+    )
+
+    # ── QC corrective feedback (prepended — model must address first) ────────
     if feedback:
         if "artifact" in feedback.lower() or "distorted" in feedback.lower():
             neg = (feedback
@@ -567,63 +719,116 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
                    .replace("Visual artifacts detected: ", "")
                    .replace("Continuity break: ", ""))
             parts.append(
-                f"== DO NOT GENERATE ==\nAVOID: {neg}\n"
-                "Focus on photorealism and natural anatomy. No distorted hands, faces, or props.\n"
-                "== END DO NOT GENERATE ==")
+                f"== CORRECTION REQUIRED ==\n"
+                f"PREVIOUS TAKE FAILED. Specifically avoid: {neg}\n"
+                "Prioritise photorealism, natural anatomy, correct subject identity.\n"
+                "== END CORRECTION ==")
         else:
-            parts.append(feedback)
+            parts.append(f"== CORRECTION REQUIRED ==\n{feedback}\n== END CORRECTION ==")
 
-    # Automotive mandate
+    # ── Mode-specific mandates (injected only for relevant modes) ────────────
     if mode == ProductionMode.PREMIUM_AUTOMOTIVE_AD:
-        parts.append(
-            "== AUTOMOTIVE MANDATE ==\n"
-            "The hero subject is the vehicle. Render with studio-quality materials: "
-            "paint clearcoat depth, panel reflection accuracy, tyre sidewall detail, "
-            "interior ambient glow. Physics must be believable (no floating, no gravity errors). "
-            "Camera angles must flatter the vehicle silhouette and surface geometry. "
-            "Human subjects are supporting cast — never obscure the vehicle's hero angles. "
-            "Every frame must look like it could open a premium automotive brand film.\n"
-            "== END AUTOMOTIVE MANDATE ==")
+        # Derive subject type from intent; only inject vehicle mandate if subject IS a vehicle
+        pst = intent.primary_subject_type if intent else "vehicle"
+        if pst == "vehicle":
+            parts.append(
+                "== AUTOMOTIVE MANDATE ==\n"
+                f"The hero subject is the vehicle: {intent.primary_subject if intent else 'the vehicle'}. "
+                "Render with studio-quality materials: paint clearcoat depth, panel reflection accuracy, "
+                "tyre sidewall detail, interior ambient glow. "
+                "Physics must be believable (no floating, no gravity errors). "
+                "Camera angles must flatter the vehicle silhouette and surface geometry. "
+                "Human subjects are supporting cast — never obscure the vehicle's hero angles.\n"
+                "== END AUTOMOTIVE MANDATE ==")
+        else:
+            # Automotive mode but non-vehicle primary subject — use general commercial mandate
+            parts.append(
+                "== COMMERCIAL MANDATE ==\n"
+                f"This is a premium commercial production. Primary subject: {intent.primary_subject if intent else 'the subject'}. "
+                "Every frame must be agency-quality. Clean, intentional composition.\n"
+                "== END COMMERCIAL MANDATE ==")
 
-    # Cinematic Identity Mandate
-    if cine:
-        parts.append(
-            "== CINEMATIC IDENTITY MANDATE ==\n"
-            f"Strictly adhere to this visual philosophy.\n"
-            f"COLOR: {cine.color_palette}.\n"
-            f"LIGHTING: {cine.lighting}.\n"
-            f"TEXTURE: {cine.texture}.\n"
-            f"CAMERA: {cine.camera_language}.\n"
-            f"RHYTHM: {cine.editing_rhythm}.\n"
-            "== END MANDATE ==")
+    # ── B. STORY CONTEXT ─────────────────────────────────────────────────────
+    if obj and obj.story_beat:
+        parts.append(f"STORY BEAT: {obj.story_beat}")
+    elif shot.dramatic_purpose if hasattr(shot, "dramatic_purpose") else False:
+        parts.append(f"STORY BEAT: {shot.dramatic_purpose}")  # type: ignore
 
-    # Location context
-    if loc:
-        parts.append(
-            f"SCENE: {loc.name}. {loc.description} "
-            f"Time: {loc.time_of_day}. Atmosphere: {loc.atmosphere}.")
-        if loc.recurring_props:
-            parts.append(f"Key props visible: {', '.join(loc.recurring_props[:4])}.")
+    # ── C. SUBJECT IDENTITY ──────────────────────────────────────────────────
+    # Primary subject (may be a character, product, location, or concept)
+    if intent and intent.primary_subject:
+        parts.append(f"PRIMARY SUBJECT: {intent.primary_subject}.")
 
-    # Subject + Action
-    parts.append(f"SUBJECT: {shot.subject}.")
-    parts.append(f"ACTION: {shot.action}. The action should be natural and unforced.")
-
-    # Character identity blocks (full physical description for every visible character)
+    # Character identity blocks (full physical description for visual lock)
     for c in visible_chars:
         parts.append(
-            f"CHARACTER: {c.name}. "
+            f"CHARACTER IDENTITY (DO NOT ALTER): {c.name}. "
             f"PHYSICALITY: {c.physical_description}. "
             f"WARDROBE: {c.wardrobe}. "
-            f"MANNERISMS: {c.mannerisms}. "
-            f"PERFORMANCE (restrained, internal): {shot.emotional_direction or c.motivation}.")
+            f"MANNERISMS: {c.mannerisms}.")
 
-    # ── REFERENCE ASSET COLLECTION ──────────────────────────────────────────
-    # Priority:
-    #   1. Location canonical reference  (scene geography lock)
-    #   2. All visible character canonical references  (identity lock)
-    #   3. Previous-shot continuity frame  (intra-scene only)
-    # Only GCS URIs are accepted — non-GCS URIs are silently skipped.
+    # ── D. SHOT OBJECTIVE ────────────────────────────────────────────────────
+    if obj and obj.what_must_audience_see:
+        parts.append(f"SHOT OBJECTIVE (most important): {obj.what_must_audience_see}")
+    else:
+        # Fallback: derive objective from subject + action
+        parts.append(f"SHOT OBJECTIVE: Show {shot.subject} {shot.action}.")
+
+    # ── E. ACTION ────────────────────────────────────────────────────────────
+    parts.append(f"ACTION: {shot.action}. Natural, unforced, motivated.")
+
+    # Performance direction (for human subjects)
+    perf = " | ".join(x for x in [
+        f"objective={shot.performance_objective}"      if shot.performance_objective else "",
+        f"emotion={shot.emotional_direction}"          if shot.emotional_direction else "",
+        f"subtext={shot.performance_subtext}"          if shot.performance_subtext else "",
+        f"physical behavior={shot.physical_behavior}"  if shot.physical_behavior else "",
+        f"eyelines={shot.eyelines}"                    if shot.eyelines else "",
+    ] if x)
+    if perf:
+        parts.append(f"PERFORMANCE: {perf}")
+
+    # ── F. ENVIRONMENT ───────────────────────────────────────────────────────
+    if loc:
+        parts.append(
+            f"ENVIRONMENT: {loc.name}. {loc.description} "
+            f"Time: {loc.time_of_day}. Atmosphere: {loc.atmosphere}.")
+        if loc.recurring_props:
+            parts.append(f"Key props: {', '.join(loc.recurring_props[:4])}.")
+    if shot.atmosphere:
+        parts.append(f"ATMOSPHERE: {shot.atmosphere}.")
+    if shot.sound:
+        parts.append(f"SOUND: {shot.sound}.")
+
+    # ── G. CAMERA ────────────────────────────────────────────────────────────
+    cam_parts = [shot.shot_type]
+    if shot.camera:   cam_parts.append(shot.camera)
+    if shot.lens:     cam_parts.append(f"lens {shot.lens}")
+    if shot.movement: cam_parts.append(f"movement {shot.movement}")
+    if obj and obj.camera_rationale:
+        cam_parts.append(f"rationale: {obj.camera_rationale}")
+    parts.append(f"CAMERA: {', '.join(cam_parts)}.")
+    if shot.composition:
+        parts.append(f"COMPOSITION: {shot.composition}.")
+
+    # ── H. LIGHTING ──────────────────────────────────────────────────────────
+    lighting = shot.lighting or (cine.lighting if cine else "natural available light")
+    if obj and obj.lighting_rationale:
+        parts.append(f"LIGHTING: {lighting}. Rationale: {obj.lighting_rationale}.")
+    else:
+        parts.append(f"LIGHTING: {lighting}.")
+
+    # ── Cinematic Identity Mandate (style, after subject/action/camera) ───────
+    if cine:
+        parts.append(
+            "== CINEMATIC IDENTITY ==\n"
+            f"COLOR: {cine.color_palette}. "
+            f"TEXTURE: {cine.texture}. "
+            f"CAMERA RULES: {cine.camera_language}.\n"
+            "== END CINEMATIC IDENTITY ==")
+
+    # ── I. CONTINUITY ────────────────────────────────────────────────────────
+    # Reference assets — collected by priority
     reference_assets: List[AssetReference] = []
     seen_uris: set = set()
 
@@ -632,9 +837,11 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
             seen_uris.add(asset.uri)
             reference_assets.append(asset)
 
+    # 1. Location canonical reference
     if loc and loc.canonical_visual_assets:
         _add_ref(loc.canonical_visual_assets[0])
 
+    # 2. All visible character references
     for c in visible_chars:
         if c.canonical_visual_assets:
             _add_ref(c.canonical_visual_assets[0])
@@ -643,7 +850,7 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
                 asset_type=AssetType.IMAGE, uri=c.reference_image_uri,
                 metadata={"role": "character_identity", "mime_type": "image/png"}))
 
-    # Intra-scene previous-shot continuity frame
+    # 3. Intra-scene previous-shot continuity frame
     if (previous_shot
             and previous_shot.generated_frame_uris
             and previous_shot.scene_id == shot.scene_id):
@@ -655,57 +862,50 @@ def build_veo_generation_package(shot: Shot, p: FilmProject, feedback: str = "",
 
     if reference_assets:
         parts.append(
-            "CANONICAL REFERENCE ASSETS (maintain all visual identities exactly): "
+            "CANONICAL REFERENCES (maintain all visual identities exactly): "
             + "; ".join(
                 f"{a.metadata.get('role', 'identity')}={a.uri}"
                 for a in reference_assets))
 
-    # Cross-shot continuity note (text-level)
+    # Text-level continuity note
     if previous_shot:
         if previous_shot.scene_id != shot.scene_id:
             parts.append(
-                "NOTE: This is the first shot of a NEW SCENE. "
-                "Establish the new location cleanly while preserving character appearance and wardrobe.")
+                "SCENE TRANSITION: New scene begins. Establish new location cleanly. "
+                "Preserve character appearance and wardrobe exactly.")
         else:
+            cont_reqs = []
+            if obj and obj.continuity_requirements:
+                cont_reqs = obj.continuity_requirements
             parts.append(
-                f"PREVIOUS SHOT CONTINUITY: subject={previous_shot.subject}; "
-                f"action={previous_shot.action}; location={previous_shot.location_id}. "
-                "Continue screen direction, wardrobe, props, emotional state, and lighting exactly.")
+                f"INTRA-SCENE CONTINUITY: "
+                f"prev_subject={previous_shot.subject}; prev_action={previous_shot.action}; "
+                f"location={previous_shot.location_id}. "
+                "Continue: screen direction, wardrobe, props, emotional state, lighting."
+                + (f" Must preserve: {', '.join(cont_reqs)}." if cont_reqs else ""))
 
-    # Camera & Composition
-    cam_parts = [shot.shot_type]
-    if shot.camera:    cam_parts.append(shot.camera)
-    if shot.lens:      cam_parts.append(f"lens {shot.lens}")
-    if shot.movement:  cam_parts.append(f"movement must be {shot.movement}")
-    parts.append(f"CAMERA: {', '.join(cam_parts)}.")
-    if shot.composition:
-        parts.append(f"COMPOSITION: {shot.composition}. The framing is deliberate and meaningful.")
+    # ── J. NEGATIVE CONSTRAINTS ──────────────────────────────────────────────
+    neg_constraints: List[str] = []
 
-    # Lighting
-    lighting = shot.lighting or (cine.lighting if cine else "natural available light")
-    parts.append(f"LIGHTING: {lighting}. Avoid artificial, overlit aesthetics.")
+    if obj and obj.failure_conditions:
+        neg_constraints.extend(obj.failure_conditions[:4])
+    if intent and intent.prohibited_outcomes:
+        neg_constraints.extend(intent.prohibited_outcomes[:3])
+    if not neg_constraints:
+        neg_constraints = [
+            f"{shot.subject} not clearly visible",
+            "random background substituted for scripted location",
+            "character identity changed from previous shots",
+        ]
 
-    # Atmosphere + Sound
-    if shot.atmosphere: parts.append(f"ATMOSPHERE: {shot.atmosphere}.")
-    if shot.sound:      parts.append(f"PRODUCTION SOUND: {shot.sound}.")
-
-    # Acting direction
-    perf = " | ".join(x for x in [
-        f"objective={shot.performance_objective}"   if shot.performance_objective else "",
-        f"emotion={shot.emotional_direction}"       if shot.emotional_direction else "",
-        f"subtext={shot.performance_subtext}"       if shot.performance_subtext else "",
-        f"physical behavior={shot.physical_behavior}" if shot.physical_behavior else "",
-        f"eyelines={shot.eyelines}"                 if shot.eyelines else "",
-    ] if x)
-    if perf:
-        parts.append(f"PERFORMANCE: {perf}")
-
-    parts.append("Final output: a single, continuous shot of the highest cinematic quality.")
     parts.append(
-        "CONTINUITY IS PARAMOUNT: Preserve all character appearances, wardrobe, and location details "
-        "exactly as described. No random elements.")
+        "== DO NOT GENERATE ==\n"
+        + " | ".join(neg_constraints)
+        + "\n== END DO NOT GENERATE ==")
+
+    parts.append("Output: single continuous shot, highest possible photographic quality.")
 
     return {
-        "prompt": " ".join(parts),
+        "prompt": "\n".join(parts),
         "reference_assets": [a.model_dump() for a in reference_assets],
     }

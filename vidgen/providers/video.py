@@ -7,22 +7,7 @@ from google.genai import types
 from vidgen.providers.base import VideoGenerator
 from vidgen.models import GenerationJob
 from vidgen.config import settings
-
-# Error classification
-_DETERMINISTIC = ("404", "not_found", "not found", "403", "permission", "invalid_argument",
-                   "400", "unsupported", "does not have access", "model was not found",
-                   "unauthenticated", "401")
-_TRANSIENT = ("429", "500", "502", "503", "timeout", "timed out", "unavailable",
-              "deadline exceeded", "resource exhausted")
-
-
-def _classify(err: str) -> str:
-    low = err.lower()
-    if any(k in low for k in _DETERMINISTIC):
-        return "deterministic"
-    if any(k in low for k in _TRANSIENT):
-        return "transient"
-    return "transient"  # default to transient so unknown errors get retried once
+from vidgen.utils.retry import call_with_retry, RateLimitExhausted
 
 
 class MockVideoGenerator(VideoGenerator):
@@ -114,7 +99,7 @@ class VeoVideoGenerator(VideoGenerator):
         dur = duration if duration in (4, 6, 8) else 8
         config = self._build_config(dur, output_uri, reference_assets)
 
-        try:
+        def _submit() -> GenerationJob:
             print(f"[VEO] {shot_id} submitting...")
             op = self.client.models.generate_videos(
                 model=self.model, prompt=prompt, config=config
@@ -122,26 +107,42 @@ class VeoVideoGenerator(VideoGenerator):
             op = self._poll(op)
 
             if not op.done:
-                return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error="Veo timed out")
+                # Treat timeout as transient so retry policy can re-submit
+                raise RuntimeError("Veo operation timed out (transient)")
 
             err_obj = getattr(op, "error", None)
             if err_obj and getattr(err_obj, "code", 0) not in (0, None):
-                return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error=str(err_obj))
-
-            # Check for safety ratings or other metadata that might indicate a silent failure
-            metadata = getattr(op, "metadata", None) or {}
-            safety_ratings = metadata.get("safety_ratings")
-            error_message = metadata.get("error_message")
+                raise RuntimeError(str(err_obj))
 
             uri = self._extract_uri(op, output_uri, shot_id)
             if uri:
                 print(f"[VEO] {shot_id} ✓ {uri}")
                 return GenerationJob(project_id=project_id, shot_id=shot_id,
                                      status="completed", artifact_uri=uri)
+            raise RuntimeError(f"no video URI in response. operation: {op}")
 
-            return GenerationJob(project_id=project_id, shot_id=shot_id, status="failed", error=f"no video URI in response. operation: {op}")
-
+        try:
+            return call_with_retry(
+                fn=_submit,
+                provider="veo",
+                model=self.model,
+                operation=f"generate_shot/{shot_id}",
+            )
+        except RateLimitExhausted as exc:
+            return GenerationJob(
+                project_id=project_id, shot_id=shot_id,
+                status="rate_limit_exhausted",
+                error=str(exc),
+            )
+        except RuntimeError as exc:
+            return GenerationJob(
+                project_id=project_id, shot_id=shot_id,
+                status="failed",
+                error=str(exc),
+            )
         except Exception as exc:
-            # Any exception at this level is treated as a failure for the orchestrator to handle.
-            return GenerationJob(project_id=project_id, shot_id=shot_id,
-                                 status="failed", error=str(exc))
+            return GenerationJob(
+                project_id=project_id, shot_id=shot_id,
+                status="failed",
+                error=str(exc),
+            )

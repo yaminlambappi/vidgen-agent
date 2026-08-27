@@ -37,6 +37,13 @@ class Settings:
     IMAGE_RETRY_ATTEMPTS = int(os.getenv("IMAGE_RETRY_ATTEMPTS", "8"))
     IMAGE_REQUEST_DELAY_SECONDS = float(os.getenv("IMAGE_REQUEST_DELAY_SECONDS", "3.0"))
 
+    # ── Rate-limit resilience ────────────────────────────────────────────────
+    # These control the shared retry policy used by all generative providers.
+    VIDGEN_MAX_RETRIES = int(os.getenv("VIDGEN_MAX_RETRIES", "5"))
+    VIDGEN_INITIAL_BACKOFF_SECONDS = float(os.getenv("VIDGEN_INITIAL_BACKOFF_SECONDS", "2.0"))
+    VIDGEN_MAX_BACKOFF_SECONDS = float(os.getenv("VIDGEN_MAX_BACKOFF_SECONDS", "60.0"))
+    VIDGEN_RETRY_JITTER = float(os.getenv("VIDGEN_RETRY_JITTER", "1.0"))
+
     @property
     def is_production(self) -> bool:
         return self.FILM_MODE == "production" and self.ALLOW_REAL_GENERATION

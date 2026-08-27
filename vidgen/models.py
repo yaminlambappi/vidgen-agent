@@ -23,6 +23,61 @@ class AssetType(str, Enum):
     AUDIO = "audio"
     TEXT = "text"
 
+class QCFailureReason(str, Enum):
+    """Structured QC failure reasons — enables targeted prompt correction on retry."""
+    SUBJECT_MISSING         = "SUBJECT_MISSING"
+    ACTION_MISSING          = "ACTION_MISSING"
+    INTENT_MISMATCH         = "INTENT_MISMATCH"
+    CONTINUITY_BREAK        = "CONTINUITY_BREAK"
+    CHARACTER_IDENTITY_BREAK = "CHARACTER_IDENTITY_BREAK"
+    PRODUCT_IDENTITY_BREAK  = "PRODUCT_IDENTITY_BREAK"
+    LOCATION_BREAK          = "LOCATION_BREAK"
+    CAMERA_OBJECTIVE_MISMATCH = "CAMERA_OBJECTIVE_MISMATCH"
+    REALISM_FAILURE         = "REALISM_FAILURE"
+    VISUAL_ARTIFACTS        = "VISUAL_ARTIFACTS"
+    TECHNICAL_INVALID       = "TECHNICAL_INVALID"
+
+class ContentIntent(BaseModel):
+    """
+    Universal content understanding — derived from the topic before any Bible is created.
+    Tells every downstream agent WHAT this production actually is and who/what the
+    primary subject is.  Never defaults to 'vehicle' or any other hard-coded type.
+    """
+    primary_subject: str = ""          # the single most important visual entity
+    primary_subject_type: str = ""     # person | character | vehicle | product | location |
+                                       # animal | object | environment | concept
+    secondary_subjects: List[str] = Field(default_factory=list)
+    characters: List[str] = Field(default_factory=list)
+    locations: List[str] = Field(default_factory=list)
+    narrative_purpose: str = ""        # what story/message this content serves
+    emotional_objective: str = ""      # how the audience should feel
+    visual_objective: str = ""         # the dominant visual impression
+    genre: str = ""
+    tone: str = ""
+    target_audience: str = ""
+    brand_product_requirements: str = ""  # empty if not a commercial
+    realism_requirement: str = ""      # photorealistic | stylised | abstract
+    continuity_requirements: List[str] = Field(default_factory=list)
+    shot_level_objectives: List[str] = Field(default_factory=list)
+    prohibited_outcomes: List[str] = Field(default_factory=list)
+
+class ShotObjective(BaseModel):
+    """
+    Machine-readable shot intent — must be derived BEFORE the Veo prompt is compiled.
+    Answers the 9 required questions for every shot.
+    """
+    shot_id: str = ""
+    what_must_audience_see: str = ""
+    primary_subject: str = ""
+    subject_action: str = ""
+    where: str = ""
+    story_beat: str = ""
+    continuity_requirements: List[str] = Field(default_factory=list)
+    must_not_lose: List[str] = Field(default_factory=list)
+    camera_rationale: str = ""
+    lighting_rationale: str = ""
+    failure_conditions: List[str] = Field(default_factory=list)
+
 class AssetReference(BaseModel):
     asset_type: AssetType
     uri: str
@@ -89,6 +144,8 @@ class Shot(BaseModel):
     eyelines: str = ""
     sound: str = ""
     transition: str = ""
+    # Structured shot objective (populated by StoryboardAgent)
+    shot_objective: Optional[ShotObjective] = None
     veo_prompt: str = ""
     generated_frame_uris: List[str] = Field(default_factory=list)
     generated_asset_uri: str = ""
@@ -178,6 +235,8 @@ class FilmProject(BaseModel):
     language: str = ""
     aspect_ratio: str = "16:9"
     production_mode: ProductionMode = ProductionMode.SHORT_FILM
+    # Universal content understanding — derived before any Bible creation
+    content_intent: Optional[ContentIntent] = None
     status: FilmStatus = FilmStatus.QUEUED
     progress: int = 0
     message: str = "Queued."

@@ -110,50 +110,57 @@ def _write_stub_media_ffmpeg(output_path: str, ext: str, duration: float = 8.0) 
 
 
 def normalize_video(input_path: str, output_path: str, expected_duration: Optional[float] = None) -> None:
-    """Normalise a shot to 1920×1080 H.264/AAC with optional duration enforcement.
+    """Normalise a shot to 1920×1080 H.264/AAC with deterministic timestamps.
 
-    Adds a silent AAC audio track when the source has no audio stream (Veo
-    generate_audio=False). In simulation mode this is a no-op.
+    - Adds a silent AAC audio track when the source has no audio stream (Veo generate_audio=False)
+    - Sets -vsync cfr for constant frame rate (eliminates VFR timestamp jitter)
+    - Resets timestamps with -fflags +genpts to prevent boundary discontinuities
+    - In simulation mode this is a no-op.
     """
     if not settings.is_production:
         return
     vf = ("scale=1920:1080:force_original_aspect_ratio=decrease,"
-          "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
+          "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p")
     if expected_duration:
         vf += f",tpad=stop_mode=clone:whole_duration={expected_duration}"
 
-    # Probe the source to check whether it has an audio stream.
     try:
         probe_data = probe(input_path)
         has_audio = any(s.get("codec_type") == "audio" for s in probe_data.get("streams", []))
     except Exception:
         has_audio = False
 
+    base_args = [
+        "-fflags", "+genpts",       # regenerate PTS from scratch — prevents timestamp gaps
+        "-i", input_path,
+    ]
+
     if has_audio:
-        # Source has audio — normalize it alongside video.
-        audio_args = ["-af", "apad"]
+        audio_filter_args = ["-af", "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"]
         if expected_duration:
-            audio_args += ["-t", str(expected_duration)]
+            audio_filter_args += ["-t", str(expected_duration)]
         run_ffmpeg([
-            "-i", input_path,
+            *base_args,
             "-vf", vf,
-            *audio_args,
+            *audio_filter_args,
+            "-vsync", "cfr",
             "-r", str(settings.FPS),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-c:a", "aac", "-ar", "48000",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2",
             "-movflags", "+faststart",
             output_path,
         ])
     else:
-        # Video-only source (Veo generate_audio=False) — add a silent audio track.
+        # Video-only source — add a silent audio track
         dur_args = ["-t", str(expected_duration)] if expected_duration else []
         run_ffmpeg([
-            "-i", input_path,
+            *base_args,
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
             "-vf", vf,
+            "-vsync", "cfr",
             "-r", str(settings.FPS),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-c:a", "aac", "-ar", "48000",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2",
             *dur_args,
             "-shortest",
             "-movflags", "+faststart",
