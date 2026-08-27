@@ -47,7 +47,10 @@ class VeoVideoGenerator(VideoGenerator):
             duration_seconds=duration_seconds,
             number_of_videos=1,
             output_gcs_uri=output_uri,
-            generate_audio=True,
+            # Audio is disabled: VidGen supplies its own time-coded narration, dialogue,
+            # and score in final_mix(). Veo-baked audio would contaminate the soundtrack
+            # with model-generated voices that cannot be time-controlled.
+            generate_audio=False,
         )
         references = []
         for asset in reference_assets:

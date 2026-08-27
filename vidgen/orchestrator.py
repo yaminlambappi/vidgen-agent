@@ -164,16 +164,54 @@ class Orchestrator:
         raise RuntimeError(f"Shot {shot.shot_id} failed all {settings.RETRY_ATTEMPTS} attempts. Last error: {last_error}")
 
     def _build_audio(self, p: FilmProject, root: Path) -> None:
-        narration = " ".join(
-            sc.narration_text.strip() for sc in sorted(p.scenes, key=lambda x: x.index)
-            if sc.narration_text).strip()
-        if narration:
-            narr = root / "narration.mp3"
-            self.voice.synthesize(narration, str(narr))
-            p.audio_plan.narration_uri = self.storage.upload(
-                str(narr), f"projects/{p.project_id}/audio/narration.mp3")
-            print(f"  [AUDIO] Narration {narr.stat().st_size//1024}KB → {p.audio_plan.narration_uri}")
+        """
+        Build all time-coded audio assets for the film.
 
+        Narration is synthesised per-scene as independent MP3 files.
+        Each segment is assigned a start_ms derived from the actual cumulative
+        shot timeline — never concatenated into a global string.
+        Scenes without narration produce no audio asset.
+        Dialogue is likewise independently time-coded.
+        """
+        # ── 1. Build shot timeline: cumulative start time per scene ───────────
+        # scenes are sorted by index; start_ms[i] = ms at which scene i begins
+        sorted_scenes = sorted(p.scenes, key=lambda x: x.index)
+        scene_start_ms: dict = {}
+        cursor_ms = 0
+        for sc in sorted_scenes:
+            scene_start_ms[sc.scene_id] = cursor_ms
+            cursor_ms += sum(shot.duration for shot in sc.shots) * 1000
+
+        # ── 2. Per-scene narration (independent, time-coded) ──────────────────
+        narration_tracks: list = []
+        for sc in sorted_scenes:
+            text = (sc.narration_text or "").strip()
+            if not text:
+                continue  # no narration for this scene → no audio file → genuine silence
+            narr_path = root / f"narration_s{sc.index}.mp3"
+            self.voice.synthesize_narration(text, str(narr_path))
+            start_ms = scene_start_ms[sc.scene_id]
+            narration_tracks.append({
+                "path": str(narr_path),
+                "start_ms": start_ms,
+                "scene_index": sc.index,
+                "scene_id": sc.scene_id,
+            })
+            # Upload and record URI
+            uri = self.storage.upload(
+                str(narr_path),
+                f"projects/{p.project_id}/audio/narration_s{sc.index}.mp3")
+            print(f"  [AUDIO] Narration scene {sc.index} start={start_ms}ms "
+                  f"{narr_path.stat().st_size // 1024}KB → {uri}")
+
+        # Store narration tracks in audio plan (list of dicts with start_ms)
+        p.audio_plan.narration_tracks = narration_tracks
+
+        # Legacy single-URI field: point to first narration track if any (for manifest)
+        if narration_tracks:
+            p.audio_plan.narration_uri = narration_tracks[0].get("path", "")
+
+        # ── 3. Per-line dialogue (independent, time-coded) ────────────────────
         dialogue_paths = self.voice.synthesize_dialogue(p, root)
         for i, (path, timeline) in enumerate(dialogue_paths):
             uri = self.storage.upload(path, f"projects/{p.project_id}/audio/dialogue_{i}.mp3")
@@ -182,6 +220,7 @@ class Orchestrator:
         if dialogue_paths:
             print(f"  [AUDIO] Synthesized {len(dialogue_paths)} dialogue lines.")
 
+        # ── 4. Score (full film duration) ─────────────────────────────────────
         total_dur = sum(sh.duration for sc in p.scenes for sh in sc.shots)
         score = root / "music.m4a"
         tempo = p.music_plan.tempo if p.music_plan else "72 bpm"
@@ -190,6 +229,7 @@ class Orchestrator:
             str(score), f"projects/{p.project_id}/audio/music.m4a")
         print(f"  [AUDIO] Score {total_dur}s → {p.audio_plan.music_uri}")
 
+        # ── 5. Subtitles (narration text only, time-coded to scenes) ──────────
         srt = root / "subtitles.srt"
         srt.write_text(self.subtitles.generate(p))
         p.audio_plan.subtitle_uri = self.storage.upload(
@@ -204,8 +244,7 @@ class Orchestrator:
             if not sh or not sh.generated_asset_uri:
                 raise RuntimeError(f"Edit gate: shot {sid} missing or failed QC")
             local = root / f"{sid}.mp4"
-            
-            # Resilient download with retries and validation
+
             for attempt in range(settings.RETRY_ATTEMPTS):
                 try:
                     if not local.exists():
@@ -219,11 +258,12 @@ class Orchestrator:
                     time.sleep(2 ** attempt)
             else:
                 raise RuntimeError(f"Shot {sid} failed download validation after {settings.RETRY_ATTEMPTS} attempts")
-            
+
             paths.append(str(local))
-        for uri, name in [(p.audio_plan.narration_uri,"narration.mp3"),
-                          (p.audio_plan.music_uri,"music.m4a"),
-                          (p.audio_plan.subtitle_uri,"subtitles.srt")]:
+
+        # ── Score ─────────────────────────────────────────────────────────────
+        for uri, name in [(p.audio_plan.music_uri, "music.m4a"),
+                          (p.audio_plan.subtitle_uri, "subtitles.srt")]:
             if not uri:
                 if settings.is_production:
                     raise RuntimeError(f"Audio asset missing: {name}")
@@ -238,12 +278,52 @@ class Orchestrator:
                     break
                 except Exception as e:
                     print(f"  [WARN] Download failed for {name} (attempt {attempt+1}): {e}")
-                    if local.exists(): local.unlink()
+                    if local.exists():
+                        local.unlink()
                     time.sleep(2 ** attempt)
             else:
                 raise RuntimeError(f"Asset {name} failed download after {settings.RETRY_ATTEMPTS} attempts")
 
-        dialogue_paths = []
+        # ── Per-scene narration tracks (time-coded) ───────────────────────────
+        # narration_tracks is stored on audio_plan as a dynamic attribute from _build_audio.
+        # In the mastering stage (which runs in the same process after editing) it is already
+        # in memory. On a resumed run (MASTERING resume) we re-download from the URIs logged
+        # in audio_plan.narration_tracks.
+        raw_narr_tracks = getattr(p.audio_plan, "narration_tracks", None) or []
+        narration_tracks = []
+        for seg in raw_narr_tracks:
+            # Path may already exist locally from _build_audio (same process), or need download
+            local_path = seg.get("path", "")
+            if local_path and Path(local_path).exists():
+                narration_tracks.append(seg)
+                continue
+            # Try to re-download using scene index
+            scene_idx = seg.get("scene_index", "?")
+            uri = seg.get("uri", "")
+            if not uri:
+                # Derive URI from project structure
+                uri = f"projects/{p.project_id}/audio/narration_s{scene_idx}.mp3"
+            local = root / f"narration_s{scene_idx}.mp3"
+            for attempt in range(settings.RETRY_ATTEMPTS):
+                try:
+                    if not local.exists():
+                        self.storage.download(uri, str(local))
+                    if local.stat().st_size < 100:
+                        raise RuntimeError(f"Narration segment s{scene_idx} too small")
+                    break
+                except Exception as e:
+                    print(f"  [WARN] Download failed for narration s{scene_idx} (attempt {attempt+1}): {e}")
+                    if local.exists():
+                        local.unlink()
+                    time.sleep(2 ** attempt)
+            else:
+                if settings.is_production:
+                    raise RuntimeError(f"Narration segment s{scene_idx} failed download")
+                continue
+            narration_tracks.append({**seg, "path": str(local)})
+
+        # ── Per-line dialogue tracks (time-coded) ─────────────────────────────
+        dialogue_tracks = []
         for i, item in enumerate(p.audio_plan.dialogue_timeline):
             local = root / f"dialogue_mix_{i}.mp3"
             for attempt in range(settings.RETRY_ATTEMPTS):
@@ -255,13 +335,15 @@ class Orchestrator:
                     break
                 except Exception as e:
                     print(f"  [WARN] Download failed for dialogue {i} (attempt {attempt+1}): {e}")
-                    if local.exists(): local.unlink()
+                    if local.exists():
+                        local.unlink()
                     time.sleep(2 ** attempt)
             else:
                 raise RuntimeError(f"Dialogue {i} failed download after {settings.RETRY_ATTEMPTS} attempts")
-            
-            dialogue_paths.append({**item, "path": str(local)})
-        return paths, dialogue_paths
+
+            dialogue_tracks.append({**item, "path": str(local)})
+
+        return paths, narration_tracks, dialogue_tracks
 
     def run(self, p: FilmProject) -> None:
         root = settings.VIDGEN_WORK_ROOT / p.project_id
@@ -345,22 +427,26 @@ class Orchestrator:
 
             # MASTERING
             if p.status == FilmStatus.MASTERING:
-                paths, dialogue_tracks = self._download_edit_assets(p, root)
+                paths, narration_tracks, dialogue_tracks = self._download_edit_assets(p, root)
                 assembled = root / "assembled.mp4"
-                
-                # Get expected durations for all shots in sequence to ensure perfect alignment
+
                 shot_map = {sh.shot_id: sh for sc in p.scenes for sh in sc.shots}
                 expected_durations = [shot_map[sid].duration for sid in p.edit_plan.sequence]
-                
+
                 concatenate_shots(paths, str(assembled), expected_durations=expected_durations)
-                
+
                 final = root / "final_film.mp4"
-                final_mix(str(assembled), str(final),
-                          str(root/"subtitles.srt"),
-                          str(root/"narration.mp3"),
-                          str(root/"music.m4a"), dialogue_tracks=dialogue_tracks)
+                final_mix(
+                    str(assembled), str(final),
+                    subtitle_path=str(root / "subtitles.srt"),
+                    music_path=str(root / "music.m4a"),
+                    narration_tracks=narration_tracks,
+                    dialogue_tracks=dialogue_tracks,
+                )
                 exp_dur = sum(sh.duration for sc in p.scenes for sh in sc.shots)
                 p.qc_report = validate_video(str(final), exp_dur)
+                if settings.is_production and not p.qc_report.get("has_audio"):
+                    raise RuntimeError("Final film has no audio stream")
                 mins, secs = divmod(int(p.qc_report["duration"]), 60)
                 print(f"  [QC] {p.qc_report.get('width','?')}x{p.qc_report.get('height','?')} "
                       f"{p.qc_report.get('codec','?')} {mins}m{secs:02d}s audio={p.qc_report.get('has_audio', False)}")

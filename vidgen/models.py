@@ -122,7 +122,8 @@ class EditPlan(BaseModel):
     sequence: List[str] = Field(default_factory=list)
 
 class AudioPlan(BaseModel):
-    narration_uri: str = ""
+    narration_uri: str = ""          # legacy: URI of first narration segment (for manifest)
+    narration_tracks: List[Dict[str, Any]] = Field(default_factory=list)  # per-scene timed segments
     music_uri: str = ""
     subtitle_uri: str = ""
     dialogue_uris: List[str] = Field(default_factory=list)
