@@ -97,9 +97,15 @@ class VeoVideoGenerator(VideoGenerator):
                       project_id: str = "", shot_id: str = "", reference_assets: Iterable[dict] = ()) -> GenerationJob:
         if not output_uri.endswith("/"):
             output_uri += "/"
-        # Snap to nearest valid Veo duration; fall back to 8 if out of range
-        valid = set(settings.VEO_VALID_DURATIONS) or {5, 6, 7, 8}
-        dur = duration if duration in valid else min(valid, key=lambda d: abs(d - duration))
+        # When reference images are supplied (reference_to_video mode),
+        # Veo only supports duration=8 seconds. Enforce unconditionally when refs present.
+        # Without references, snap to nearest valid duration from settings.
+        ref_list = list(reference_assets) if not isinstance(reference_assets, (list, tuple)) else list(reference_assets)
+        if ref_list:
+            dur = 8
+        else:
+            valid = set(settings.VEO_VALID_DURATIONS) or {5, 6, 7, 8}
+            dur = duration if duration in valid else min(valid, key=lambda d: abs(d - duration))
         config = self._build_config(dur, output_uri, reference_assets)
 
         def _submit() -> GenerationJob:

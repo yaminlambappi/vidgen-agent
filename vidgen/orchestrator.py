@@ -84,9 +84,9 @@ class Orchestrator:
 
         Algorithm:
           - num_scenes is fixed at 3 (the screenwriter always produces 3 scenes)
-          - Veo valid durations: 4, 5, 6, 7, 8 seconds
-          - We try each valid duration from longest to shortest to find a combination
-            where total_duration is within DURATION_TOLERANCE_SECONDS of the target
+          - In production mode: shot_duration is always 8s because Veo reference_to_video
+            only supports 8-second shots when reference images are supplied.
+          - In simulation mode: any duration in VEO_VALID_DURATIONS is tried.
           - shots_per_scene is always at least 1
           - Never exceeds MAX_SHOTS across the whole film
 
@@ -100,6 +100,19 @@ class Orchestrator:
 
         num_scenes = 3  # screenwriter always produces 3 scenes
         tolerance = settings.DURATION_TOLERANCE_SECONDS
+
+        # In production, reference images are always supplied (reference_to_video mode).
+        # Veo reference_to_video only supports duration=8s — constrain the planner here
+        # so shots are planned at 8s and the Veo API never receives an unsupported duration.
+        if settings.is_production:
+            dur = 8
+            n = max(1, round(target / (num_scenes * dur)))
+            total = num_scenes * n * dur
+            print(f"  [PLAN] target={target}s → {num_scenes} scenes × "
+                  f"{n} shots × {dur}s = {total}s "
+                  f"(diff={total - target:+d}s, production-locked to 8s/shot)")
+            return n, dur
+
         valid_durations = sorted(settings.VEO_VALID_DURATIONS, reverse=True)
 
         best: tuple[int, int] | None = None
