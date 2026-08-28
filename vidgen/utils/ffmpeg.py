@@ -122,7 +122,9 @@ def normalize_video(input_path: str, output_path: str, expected_duration: Option
     vf = ("scale=1920:1080:force_original_aspect_ratio=decrease,"
           "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p")
     if expected_duration:
-        vf += f",tpad=stop_mode=clone:whole_duration={expected_duration}"
+        # Use 'duration' instead of 'whole_duration' for FFmpeg < 4.4 compatibility.
+        # 'duration' pads the video to this total length in seconds.
+        vf += f",tpad=stop_mode=clone:duration={expected_duration}"
 
     try:
         probe_data = probe(input_path)
