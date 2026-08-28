@@ -268,19 +268,20 @@ class Orchestrator:
                 "scene_index": sc.index,
                 "scene_id": sc.scene_id,
             })
-            # Upload and record URI
+            # Upload and record URI — stored in track so resume can re-download
             uri = self.storage.upload(
                 str(narr_path),
                 f"projects/{p.project_id}/audio/narration_s{sc.index}.mp3")
+            narration_tracks[-1]["uri"] = uri
             print(f"  [AUDIO] Narration scene {sc.index} start={start_ms}ms "
                   f"{narr_path.stat().st_size // 1024}KB → {uri}")
 
         # Store narration tracks in audio plan (list of dicts with start_ms)
         p.audio_plan.narration_tracks = narration_tracks
 
-        # Legacy single-URI field: point to first narration track if any (for manifest)
+        # Legacy single-URI field: store GCS URI (not local path) for manifest/resume
         if narration_tracks:
-            p.audio_plan.narration_uri = narration_tracks[0].get("path", "")
+            p.audio_plan.narration_uri = narration_tracks[0].get("uri", narration_tracks[0].get("path", ""))
 
         # ── 3. Per-line dialogue (independent, time-coded) ────────────────────
         dialogue_paths = self.voice.synthesize_dialogue(p, root)
@@ -372,8 +373,8 @@ class Orchestrator:
             scene_idx = seg.get("scene_index", "?")
             uri = seg.get("uri", "")
             if not uri:
-                # Derive URI from project structure
-                uri = f"projects/{p.project_id}/audio/narration_s{scene_idx}.mp3"
+                # Derive full GCS URI from project structure
+                uri = f"gs://{settings.GCS_BUCKET}/projects/{p.project_id}/audio/narration_s{scene_idx}.mp3"
             local = root / f"narration_s{scene_idx}.mp3"
             for attempt in range(settings.RETRY_ATTEMPTS):
                 try:
