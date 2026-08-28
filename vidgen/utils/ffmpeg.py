@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from vidgen.config import settings
 
-def _run(command: List[str], timeout: int=1800) -> subprocess.CompletedProcess:
+def _run(command: List[str], timeout: int=3600) -> subprocess.CompletedProcess:
     r=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
     if r.returncode: raise RuntimeError(f"media command failed: {r.stderr[-3000:]}")
     return r
@@ -331,7 +331,7 @@ def final_mix(video_path: str, output_path: str, subtitle_path: Optional[str] = 
     filters.append(
         f"[silence][{score_label.strip('[]')}]{speech_label}"
         "amix=inputs=3:duration=first:normalize=0,"
-        "loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+        "dynaudnorm=p=0.9:m=10[a]"
     )
 
     command += [
