@@ -154,6 +154,15 @@ def main():
         print(f"  {k:<12}: {v}")
     print("="*72)
 
+    # ── Startup diagnostic (never prints secrets) ────────────────────────────
+    print(f"  {'FILM_MODE':<24}: {settings.FILM_MODE}")
+    print(f"  {'ALLOW_REAL_GENERATION':<24}: {settings.ALLOW_REAL_GENERATION}")
+    print(f"  {'is_production':<24}: {settings.is_production}")
+    print(f"  {'GOOGLE_CLOUD_PROJECT':<24}: {settings.GOOGLE_CLOUD_PROJECT}")
+    print(f"  {'GCS_BUCKET':<24}: {settings.GCS_BUCKET}")
+    print(f"  {'VIDGEN_PROJECT_ID present':<24}: {bool(os.getenv('VIDGEN_PROJECT_ID'))}")
+    print("="*72)
+
     if not settings.is_production:
         print("[ABORT] Set FILM_MODE=production ALLOW_REAL_GENERATION=true")
         sys.exit(1)

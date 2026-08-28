@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)  # Never override real deployment env vars (e.g. Cloud Run)
 
 try:
     from google.auth import default as _gauth
