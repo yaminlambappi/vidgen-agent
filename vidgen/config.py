@@ -49,7 +49,8 @@ class Settings:
     # A planned duration within this tolerance of the target is accepted.
     DURATION_TOLERANCE_SECONDS = int(os.getenv("DURATION_TOLERANCE_SECONDS", "10"))
     # Valid Veo shot durations (provider constraint). Shots are snapped to nearest.
-    VEO_VALID_DURATIONS = (4, 5, 6, 7, 8)
+    # Veo 3.x confirmed range: 5–8 seconds inclusive.
+    VEO_VALID_DURATIONS = (5, 6, 7, 8)
 
     @property
     def is_production(self) -> bool:

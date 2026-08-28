@@ -97,7 +97,9 @@ class VeoVideoGenerator(VideoGenerator):
                       project_id: str = "", shot_id: str = "", reference_assets: Iterable[dict] = ()) -> GenerationJob:
         if not output_uri.endswith("/"):
             output_uri += "/"
-        dur = duration if duration in (4, 6, 8) else 8
+        # Snap to nearest valid Veo duration; fall back to 8 if out of range
+        valid = set(settings.VEO_VALID_DURATIONS) or {5, 6, 7, 8}
+        dur = duration if duration in valid else min(valid, key=lambda d: abs(d - duration))
         config = self._build_config(dur, output_uri, reference_assets)
 
         def _submit() -> GenerationJob:
