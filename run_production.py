@@ -2,7 +2,6 @@
 """Production runner — Ghost of Ithaca. Checkpoint-resumable."""
 from __future__ import annotations
 import os
-import os
 import json, sys, time, shutil
 from pathlib import Path
 from vidgen.config import settings
@@ -27,16 +26,37 @@ CHECKPOINT = STATE_DIR / "active_project_id.txt"
 
 
 def _restore_from_gcs(orc: Orchestrator, pid: str) -> FilmProject | None:
+    """
+    Restore a FilmProject from GCS or local cache.
+
+    Priority:
+      1. Local disk cache (already downloaded in a previous step this run)
+      2. GCS state file
+
+    Returns None only when the state cannot be found anywhere — meaning the
+    project ID does not exist and cannot be resumed.  Never returns None when
+    data is present.
+    """
     gcs_uri = f"gs://{settings.GCS_BUCKET}/projects/{pid}/state.json"
     local = STATE_DIR / pid / "project_state.json"
+
+    print(f"[GCS RESTORE] checking {gcs_uri}")
+
+    # Fast-path: local cache already populated (e.g. downloaded earlier this run)
     if local.exists():
-        return None
+        p = FilmProject.model_validate_json(local.read_text())
+        print(f"[GCS RESTORE] loaded from local cache — status={p.status.value}")
+        return p
+
+    # GCS path: check existence before attempting download
     if not orc.storage.exists(gcs_uri):
+        print(f"[GCS RESTORE] not found: {gcs_uri}")
         return None
+
     local.parent.mkdir(parents=True, exist_ok=True)
     orc.storage.download(gcs_uri, str(local))
     p = FilmProject.model_validate_json(local.read_text())
-    print(f"[GCS RESTORE] {pid} status={p.status.value}")
+    print(f"[GCS RESTORE] {pid} restored from GCS — status={p.status.value}")
     return p
 
 
@@ -182,7 +202,10 @@ def main():
     # VIDGEN_PROJECT_ID is guaranteed present above in production mode
     p = _restore_from_gcs(orc, os.getenv("VIDGEN_PROJECT_ID"))
     if not p:
+        expected_uri = f"gs://{settings.GCS_BUCKET}/projects/{os.getenv('VIDGEN_PROJECT_ID')}/state.json"
         print(f"[ERROR] Could not restore project {os.getenv('VIDGEN_PROJECT_ID')} from GCS")
+        print(f"[ERROR] Expected state at: {expected_uri}")
+        print(f"[ERROR] Verify the bucket exists and the project was checkpointed there.")
         sys.exit(3)
 
     if p.status == FilmStatus.COMPLETED:
