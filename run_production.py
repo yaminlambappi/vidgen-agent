@@ -208,6 +208,13 @@ def main():
         print(f"[ERROR] Verify the bucket exists and the project was checkpointed there.")
         sys.exit(3)
 
+    # A FAILED checkpoint must be reset to the safest resumable state before
+    # re-entering the orchestrator.  _reset() inspects completed assets and
+    # rewinds to the correct pipeline stage, preserving all prior work.
+    if p.status == FilmStatus.FAILED:
+        print(f"[RESUME] Restored project is FAILED — resetting to safest resumable state")
+        p = _reset(p)
+
     if p.status == FilmStatus.COMPLETED:
         print("[STATUS] Already complete — QC only")
     else:

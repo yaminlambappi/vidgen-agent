@@ -273,3 +273,178 @@ class TestProductionGuardRegression(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# 6. FAILED restored project → reset before QC, runner proceeds
+# ---------------------------------------------------------------------------
+
+class TestFailedProjectReset(unittest.TestCase):
+    """
+    Regression tests: a FAILED checkpoint must be reset before the quality
+    gate is evaluated and before the orchestrator is entered.
+    """
+
+    def _import_mod(self):
+        _restore_from_gcs, mod = _import_restore_fn()
+        return mod
+
+    def test_failed_project_is_reset_before_run(self):
+        """
+        After restore, a FAILED project must have its status changed by _reset()
+        before _run() / orc.run() is called.
+        """
+        mod = self._import_mod()
+
+        failed_project = FilmProject(topic="test")
+        failed_project.status = FilmStatus.FAILED
+
+        run_call_statuses: list[str] = []
+
+        def fake_run(orc, p):
+            run_call_statuses.append(p.status.value)
+            p.status = FilmStatus.COMPLETED
+            return p
+
+        def fake_restore(orc, pid):
+            return failed_project
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Pre-create the project dir so quality_report.json write doesn't fail
+            proj_dir = Path(tmpdir) / failed_project.project_id
+            proj_dir.mkdir(parents=True)
+
+            with patch.object(mod, "_restore_from_gcs", side_effect=fake_restore), \
+                 patch.object(mod, "_run", side_effect=fake_run), \
+                 patch.object(mod, "_qc", return_value=["GATE1: story missing"]), \
+                 patch.object(mod, "STATE_DIR", Path(tmpdir)), \
+                 patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
+                 patch.dict("os.environ", {"VIDGEN_PROJECT_ID": "test-pid"}):
+
+                from vidgen.config import settings
+                with patch.object(settings, "FILM_MODE", "production"), \
+                     patch.object(settings, "ALLOW_REAL_GENERATION", True), \
+                     patch.object(settings, "GOOGLE_CLOUD_PROJECT", "test-project"):
+
+                    try:
+                        mod.main()
+                    except SystemExit:
+                        pass
+
+        self.assertEqual(len(run_call_statuses), 1,
+                         "_run() must be called exactly once")
+        self.assertNotEqual(
+            run_call_statuses[0], FilmStatus.FAILED.value,
+            f"_run() was called with FAILED status — _reset() was not applied first"
+        )
+
+    def test_failed_project_reset_preserves_generated_shots(self):
+        """
+        _reset() on a FAILED project with some completed shots must rewind to
+        GENERATING (not QUEUED), preserving those assets.
+        """
+        mod = self._import_mod()
+
+        from vidgen.models import Scene, Shot, StorySpec
+        failed_project = FilmProject(topic="partial work")
+        failed_project.status = FilmStatus.FAILED
+        failed_project.story = StorySpec(
+            title="T", logline="L", theme="TH", genre="G", three_act_structure="123"
+        )
+        shot_done = Shot(shot_id="SH1", scene_id="S1", index=1,
+                         subject="S", action="A",
+                         generated_asset_uri="gs://bucket/shot1.mp4")
+        shot_pending = Shot(shot_id="SH2", scene_id="S1", index=2,
+                            subject="S", action="B")
+        scene = Scene(scene_id="S1", index=1, title="T",
+                      description="D", location_id="L",
+                      shots=[shot_done, shot_pending])
+        failed_project.scenes = [scene]
+
+        result = mod._reset(failed_project)
+
+        self.assertEqual(result.status, FilmStatus.GENERATING,
+                         "Partial shots → should reset to GENERATING, not QUEUED")
+        # The completed shot's URI must be preserved
+        shots = [sh for sc in result.scenes for sh in sc.shots]
+        self.assertEqual(shots[0].generated_asset_uri, "gs://bucket/shot1.mp4",
+                         "_reset() must not clear already-generated shot URIs")
+
+    def test_failed_project_no_work_resets_to_queued(self):
+        """
+        A FAILED project with no scenes and no shots must reset to QUEUED.
+        """
+        mod = self._import_mod()
+        p = FilmProject(topic="fresh fail")
+        p.status = FilmStatus.FAILED
+
+        result = mod._reset(p)
+        self.assertEqual(result.status, FilmStatus.QUEUED)
+
+    def test_failed_project_with_all_shots_done_resets_to_editing(self):
+        """
+        A FAILED project where all shots are generated must reset to EDITING.
+        """
+        mod = self._import_mod()
+        from vidgen.models import Scene, Shot
+        shot = Shot(shot_id="SH1", scene_id="S1", index=1,
+                    subject="S", action="A",
+                    generated_asset_uri="gs://bucket/sh1.mp4")
+        scene = Scene(scene_id="S1", index=1, title="T",
+                      description="D", location_id="L", shots=[shot])
+        p = FilmProject(topic="all shots done")
+        p.status = FilmStatus.FAILED
+        p.scenes = [scene]
+
+        result = mod._reset(p)
+        self.assertEqual(result.status, FilmStatus.EDITING,
+                         "All shots done → should reset to EDITING")
+
+    def test_failed_status_not_passed_to_qc(self):
+        """
+        The quality gate (_qc) must never receive a FAILED project status.
+        QC is only meaningful after the orchestrator has run.
+        """
+        mod = self._import_mod()
+        qc_call_statuses: list[str] = []
+
+        def recording_qc(p):
+            qc_call_statuses.append(p.status.value)
+            return ["GATE1: story missing"]
+
+        failed_project = FilmProject(topic="test")
+        failed_project.status = FilmStatus.FAILED
+
+        def fake_restore(orc, pid):
+            return failed_project
+
+        def fake_run(orc, p):
+            p.status = FilmStatus.COMPLETED
+            return p
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_dir = Path(tmpdir) / failed_project.project_id
+            proj_dir.mkdir(parents=True)
+
+            with patch.object(mod, "_restore_from_gcs", side_effect=fake_restore), \
+                 patch.object(mod, "_run", side_effect=fake_run), \
+                 patch.object(mod, "_qc", side_effect=recording_qc), \
+                 patch.object(mod, "STATE_DIR", Path(tmpdir)), \
+                 patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
+                 patch.dict("os.environ", {"VIDGEN_PROJECT_ID": "test-pid"}):
+
+                from vidgen.config import settings
+                with patch.object(settings, "FILM_MODE", "production"), \
+                     patch.object(settings, "ALLOW_REAL_GENERATION", True), \
+                     patch.object(settings, "GOOGLE_CLOUD_PROJECT", "test-project"):
+
+                    try:
+                        mod.main()
+                    except SystemExit:
+                        pass
+
+        for status in qc_call_statuses:
+            self.assertNotEqual(
+                status, FilmStatus.FAILED.value,
+                "QC gate received a FAILED project — _reset() was not applied"
+            )
