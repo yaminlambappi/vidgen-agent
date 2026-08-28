@@ -78,6 +78,58 @@ class Orchestrator:
         self.checkpoint(p)
         print(f"[{pct:3d}%] {status.value.upper()} — {msg}")
 
+    def _plan_shot_budget(self, p: FilmProject) -> tuple[int, int]:
+        """
+        Derive (shots_per_scene, shot_duration) from p.duration_seconds.
+
+        Algorithm:
+          - num_scenes is fixed at 3 (the screenwriter always produces 3 scenes)
+          - Veo valid durations: 4, 5, 6, 7, 8 seconds
+          - We try each valid duration from longest to shortest to find a combination
+            where total_duration is within DURATION_TOLERANCE_SECONDS of the target
+          - shots_per_scene is always at least 1
+          - Never exceeds MAX_SHOTS across the whole film
+
+        Returns (shots_per_scene, shot_duration) that best fits the target.
+        Falls back to (SHOTS_PER_SCENE, DEFAULT_SHOT_DURATION) if no valid
+        combination exists (e.g. target is 0 or not set).
+        """
+        target = p.duration_seconds
+        if not target or target <= 0:
+            return settings.SHOTS_PER_SCENE, settings.DEFAULT_SHOT_DURATION
+
+        num_scenes = 3  # screenwriter always produces 3 scenes
+        tolerance = settings.DURATION_TOLERANCE_SECONDS
+        valid_durations = sorted(settings.VEO_VALID_DURATIONS, reverse=True)
+
+        best: tuple[int, int] | None = None
+        best_diff = float("inf")
+
+        for dur in valid_durations:
+            # How many shots per scene gives us the closest total?
+            # total = num_scenes * n * dur
+            n_exact = target / (num_scenes * dur)
+            # Try floor and ceil
+            for n in (max(1, int(n_exact)), max(1, int(n_exact) + 1)):
+                total = num_scenes * n * dur
+                if total > settings.MAX_SHOTS * dur:
+                    continue
+                diff = abs(total - target)
+                if diff < best_diff:
+                    best_diff = diff
+                    best = (n, dur)
+
+        if best is None or best_diff > tolerance:
+            # Fallback: use config defaults
+            return settings.SHOTS_PER_SCENE, settings.DEFAULT_SHOT_DURATION
+
+        shots_per_scene, shot_dur = best
+        total_planned = num_scenes * shots_per_scene * shot_dur
+        print(f"  [PLAN] target={target}s → {num_scenes} scenes × "
+              f"{shots_per_scene} shots × {shot_dur}s = {total_planned}s "
+              f"(diff={total_planned - target:+d}s, tolerance=±{tolerance}s)")
+        return shots_per_scene, shot_dur
+
     def _get_previous_shot(self, p: FilmProject, current_shot_index: int) -> Shot | None:
         if current_shot_index == 0:
             return None
@@ -405,15 +457,23 @@ class Orchestrator:
             if p.status == FilmStatus.STORYBOARDING:
                 res = (root/"research.md").read_text() if (root/"research.md").exists() else ""
                 p.scenes = self.screenwriter.write_scenes(p, res)
+
+                # Derive shot budget from requested duration
+                shots_per_scene, shot_duration = self._plan_shot_budget(p)
+
                 for sc in p.scenes:
-                    sc.shots = self.storyboarder.design_shots(sc, p)
+                    sc.shots = self.storyboarder.design_shots(
+                        sc, p,
+                        shots_per_scene=shots_per_scene,
+                        shot_duration=shot_duration)
                 total = sum(len(sc.shots) for sc in p.scenes)
                 if total == 0:
                     raise RuntimeError("0 shots planned — storyboard failed")
                 if total > settings.MAX_SHOTS:
                     raise RuntimeError(f"{total} shots > MAX_SHOTS={settings.MAX_SHOTS}")
-                mins, secs = divmod(total * 8, 60)
-                print(f"  [PLAN] {len(p.scenes)} scenes × {total} shots = {total*8}s (~{mins}m{secs:02d}s)")
+                total_dur = sum(sh.duration for sc in p.scenes for sh in sc.shots)
+                mins, secs = divmod(total_dur, 60)
+                print(f"  [PLAN] {len(p.scenes)} scenes × {total} shots = {total_dur}s (~{mins}m{secs:02d}s)")
                 self._set(p, FilmStatus.GENERATING, f"Generating {total} Veo shots with QC", 30)
 
             # GENERATING (with integrated QC loop)
@@ -462,9 +522,21 @@ class Orchestrator:
                 p.qc_report = validate_video(str(final), exp_dur)
                 if settings.is_production and not p.qc_report.get("has_audio"):
                     raise RuntimeError("Final film has no audio stream")
-                mins, secs = divmod(int(p.qc_report["duration"]), 60)
+                # Duration QC: actual must be within tolerance of requested
+                actual_dur = p.qc_report.get("duration", 0)
+                requested = p.duration_seconds or exp_dur
+                dur_diff = abs(actual_dur - requested)
+                if dur_diff > settings.DURATION_TOLERANCE_SECONDS:
+                    raise RuntimeError(
+                        f"Final film duration QC FAILED: "
+                        f"actual={actual_dur:.1f}s requested={requested}s "
+                        f"diff={dur_diff:.1f}s tolerance={settings.DURATION_TOLERANCE_SECONDS}s"
+                    )
+                mins, secs = divmod(int(actual_dur), 60)
                 print(f"  [QC] {p.qc_report.get('width','?')}x{p.qc_report.get('height','?')} "
-                      f"{p.qc_report.get('codec','?')} {mins}m{secs:02d}s audio={p.qc_report.get('has_audio', False)}")
+                      f"{p.qc_report.get('codec','?')} {mins}m{secs:02d}s "
+                      f"audio={p.qc_report.get('has_audio', False)} "
+                      f"(requested={requested}s diff={actual_dur - requested:+.1f}s)")
                 self._set(p, FilmStatus.UPLOADING, "Upload final MP4 + manifest", 96)
 
             # UPLOADING

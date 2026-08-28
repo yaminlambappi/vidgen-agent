@@ -442,13 +442,18 @@ class ScreenwriterAgent(BaseAgent):
 
 
 class StoryboardAgent(BaseAgent):
-    def design_shots(self, scene: Scene, p: FilmProject) -> List[Shot]:
+    def design_shots(self, scene: Scene, p: FilmProject,
+                     shots_per_scene: int = 0, shot_duration: int = 0) -> List[Shot]:
         """
-        Designs shots for a scene, deriving a ShotObjective for each shot before
-        building the shot specification. The objective drives composition decisions
-        rather than generic cinematic defaults.
+        Designs shots for a scene.
+
+        shots_per_scene: exact number of shots to produce. Defaults to settings.SHOTS_PER_SCENE.
+        shot_duration:   target duration per shot in seconds (Veo constraint: 4-8).
+                         When non-zero, the LLM is instructed to use exactly this duration,
+                         and all returned shots are clamped to this value post-LLM.
         """
-        n = settings.SHOTS_PER_SCENE
+        n = shots_per_scene if shots_per_scene > 0 else settings.SHOTS_PER_SCENE
+        target_dur = shot_duration if shot_duration > 0 else settings.DEFAULT_SHOT_DURATION
         chars = p.character_bible.characters if p.character_bible else []
         locs = p.world_bible.locations if p.world_bible else []
         loc = next((l for l in locs if l.location_id == scene.location_id), None)
@@ -458,7 +463,6 @@ class StoryboardAgent(BaseAgent):
             for c in chars) or "  No named characters"
         cine = p.cinematic_bible
 
-        # Build intent-aware context
         intent = p.content_intent
         intent_block = ""
         if intent:
@@ -490,7 +494,8 @@ class StoryboardAgent(BaseAgent):
             "- lighting, atmosphere, character_ids (list), emotional_direction\n"
             "- performance_objective, performance_subtext, physical_behavior, eyelines\n"
             "- sound, transition\n"
-            "- duration (integer 4–12 seconds based on shot purpose)\n"
+            f"- duration: use EXACTLY {target_dur} seconds for every shot "
+            f"(this is a hard production constraint)\n"
             "- shot_objective: an object with fields: what_must_audience_see, primary_subject, "
             "  subject_action, where, story_beat, continuity_requirements (list), "
             "  must_not_lose (list), camera_rationale, lighting_rationale, failure_conditions (list)\n",
@@ -502,7 +507,7 @@ class StoryboardAgent(BaseAgent):
             shot.index = i + 1
             shot.shot_id = f"{scene.scene_id}_SH{i+1:02d}"
             shot.location_id = scene.location_id
-            # Ensure shot_objective has shot_id set
+            shot.duration = target_dur   # enforce regardless of LLM output
             if shot.shot_objective:
                 shot.shot_objective.shot_id = shot.shot_id
         return shots

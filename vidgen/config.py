@@ -44,6 +44,13 @@ class Settings:
     VIDGEN_MAX_BACKOFF_SECONDS = float(os.getenv("VIDGEN_MAX_BACKOFF_SECONDS", "60.0"))
     VIDGEN_RETRY_JITTER = float(os.getenv("VIDGEN_RETRY_JITTER", "1.0"))
 
+    # ── Duration planning ────────────────────────────────────────────────────
+    # Tolerance (seconds) between requested and actual planned duration.
+    # A planned duration within this tolerance of the target is accepted.
+    DURATION_TOLERANCE_SECONDS = int(os.getenv("DURATION_TOLERANCE_SECONDS", "10"))
+    # Valid Veo shot durations (provider constraint). Shots are snapped to nearest.
+    VEO_VALID_DURATIONS = (4, 5, 6, 7, 8)
+
     @property
     def is_production(self) -> bool:
         return self.FILM_MODE == "production" and self.ALLOW_REAL_GENERATION

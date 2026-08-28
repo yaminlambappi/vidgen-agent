@@ -43,10 +43,11 @@ class VeoVideoGenerator(VideoGenerator):
             if not uri.startswith("gs://"):
                 raise ValueError(f"Veo reference must be a GCS URI, got {uri!r}")
             role = asset.get("metadata", {}).get("role", "")
-            # Map role → Veo reference type.
-            # "SUBJECT" anchors character identity; "STYLE" anchors cinematic look.
-            # Unknown roles default to "SUBJECT".
-            ref_type = "STYLE" if role in ("cinematic_style", "location_identity") else "SUBJECT"
+            # VideoGenerationReferenceType has exactly two valid values in the SDK:
+            #   ASSET  — character/product/vehicle/object/environment identity references
+            #   STYLE  — cinematic style references
+            # "SUBJECT" is NOT a valid value and will cause a 400 INVALID_ARGUMENT.
+            ref_type = "STYLE" if role == "cinematic_style" else "ASSET"
             references.append(types.VideoGenerationReferenceImage(
                 image=types.Image(gcs_uri=uri, mime_type=asset.get("metadata", {}).get("mime_type", "image/png")),
                 reference_type=ref_type))
@@ -111,15 +112,22 @@ class VeoVideoGenerator(VideoGenerator):
                 raise RuntimeError("Veo operation timed out (transient)")
 
             err_obj = getattr(op, "error", None)
-            if err_obj and getattr(err_obj, "code", 0) not in (0, None):
-                raise RuntimeError(str(err_obj))
+            if err_obj:
+                # err_obj may be a protobuf Status object (with .code) or a plain string.
+                # Any non-empty Veo operation error is a definitive generation failure —
+                # prefix "400 " so classify_error marks it deterministic (no retry).
+                code = getattr(err_obj, "code", None)
+                if code is not None and code not in (0,):
+                    raise RuntimeError(f"400 Veo operation error: {err_obj}")
+                elif code is None and str(err_obj).strip():
+                    raise RuntimeError(f"400 Veo operation error: {err_obj}")
 
             uri = self._extract_uri(op, output_uri, shot_id)
-            if uri:
-                print(f"[VEO] {shot_id} ✓ {uri}")
-                return GenerationJob(project_id=project_id, shot_id=shot_id,
-                                     status="completed", artifact_uri=uri)
-            raise RuntimeError(f"no video URI in response. operation: {op}")
+            if not uri or not isinstance(uri, str):
+                raise RuntimeError(f"no video URI in response. operation: {op}")
+            print(f"[VEO] {shot_id} ✓ {uri}")
+            return GenerationJob(project_id=project_id, shot_id=shot_id,
+                                 status="completed", artifact_uri=uri)
 
         try:
             return call_with_retry(
