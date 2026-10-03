@@ -235,6 +235,13 @@ class TestCheckpointResume(unittest.TestCase):
         self.assertNotEqual(stage, ReelStatus.PLANNING)
         self.assertEqual(stage, ReelStatus.ASSEMBLING)
 
+    def test_stub_music_is_not_playable(self):
+        from vidgen.reels.audio import is_playable_audio
+        stub = Path("/tmp/vidgen/stub-music.m4a")
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_bytes(b"stub-music")
+        self.assertFalse(is_playable_audio(str(stub)))
+
     def test_missing_ffmpeg_is_application_failure(self):
         from vidgen.reels.edit import FFmpegMissing
         from vidgen.reels.safety import classify_failure

@@ -11,6 +11,7 @@ from vidgen.reels.audio import (
     build_audio_plan,
     cloud_tts,
     default_edit_plan,
+    ensure_mixable_audio,
     render_foley,
     render_music,
     synthesize_dialogue,
@@ -359,6 +360,8 @@ class ReelFactory:
 
     def _assemble(self, job: ReelJob, root: Path) -> str:
         assert job.storyboard
+        audio_root = root / "audio"
+        ensure_mixable_audio(job, audio_root)
         paths = []
         for shot in job.storyboard.shots:
             local = shot.local_path or str(root / f"{shot.shot_id}.mp4")

@@ -179,7 +179,11 @@ def _mix(
     filters = [f"[0:v]{vf}[v]", "anullsrc=channel_layout=stereo:sample_rate=48000[silence]"]
     afmt = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
     idx = 1
+    music_ok = False
     if music_path and Path(music_path).exists():
+        from vidgen.reels.audio import is_playable_audio
+        music_ok = is_playable_audio(music_path)
+    if music_ok:
         cmd += ["-stream_loop", "-1", "-i", music_path]
         filters.append(f"[1:a]{afmt},volume=0.16[score]")
         idx = 2
@@ -190,6 +194,9 @@ def _mix(
     for track in list(voice_tracks) + list(foley_tracks):
         path = track.get("path") or track.get("local_path")
         if not path or not Path(path).exists():
+            continue
+        from vidgen.reels.audio import is_playable_audio
+        if not is_playable_audio(path):
             continue
         start_ms = int(float(track.get("start_seconds", track.get("start", 0))) * 1000)
         label = f"t{idx}"

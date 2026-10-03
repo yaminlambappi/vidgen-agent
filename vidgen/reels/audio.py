@@ -86,6 +86,61 @@ def synthesize_dialogue(job: ReelJob, root: Path, tts_fn=None) -> AudioPlan:
     return plan
 
 
+def is_playable_audio(path: str) -> bool:
+    """Reject stub files written when ffmpeg was missing."""
+    if not path:
+        return False
+    p = Path(path)
+    if not p.exists() or p.stat().st_size < 64:
+        return False
+    head = p.read_bytes()[:16]
+    if head.startswith(b"stub"):
+        return False
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return False
+    r = subprocess.run(
+        [probe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(p)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+    )
+    if r.returncode != 0:
+        return False
+    try:
+        return float((r.stdout or "0").strip() or 0) > 0.05
+    except ValueError:
+        return False
+
+
+def ensure_mixable_audio(job: ReelJob, root: Path) -> None:
+    """Rebuild deterministic music/foley if a prior run wrote stub bytes. Never calls TTS/Veo."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    total = 12.0
+    if job.storyboard and job.storyboard.total_duration:
+        total = float(job.storyboard.total_duration)
+    elif job.request:
+        total = float(job.request.duration_seconds)
+    music = (job.audio_plan.music_path if job.audio_plan and job.audio_plan.music_path
+             else str(root / "music.m4a"))
+    if not is_playable_audio(music):
+        print(f"[AUDIO] regenerating invalid score {music}")
+        render_music(job, root, total)
+    if job.audio_plan:
+        for cue in job.audio_plan.foley:
+            if cue.local_path and not is_playable_audio(cue.local_path):
+                render_foley(job, root)
+                break
+        job.audio_plan.dialogue_cues = [
+            c for c in job.audio_plan.dialogue_cues
+            if not c.local_path or is_playable_audio(c.local_path)
+        ]
+        job.audio_plan.foley = [
+            c for c in job.audio_plan.foley
+            if not c.local_path or is_playable_audio(c.local_path)
+        ]
+
+
 def render_music(job: ReelJob, root: Path, duration: float) -> str:
     path = root / "music.m4a"
     mood = (job.audio_plan.music_mood if job.audio_plan else "") or "quiet analog pad"
@@ -204,8 +259,7 @@ def _write_tone(path: str, duration: float, kind: str = "voice") -> None:
     ff = _ffmpeg()
     dur = max(0.25, float(duration))
     if not ff:
-        Path(path).write_bytes(b"stub-audio")
-        return
+        raise RuntimeError("ffmpeg is required to render audio; install ffmpeg then resume the same job")
     freq = 180 if kind == "voice" else 420
     vol = "0.08" if kind == "voice" else "0.05"
     codec = ["-c:a", "libmp3lame", "-q:a", "5"] if path.endswith(".mp3") else ["-c:a", "pcm_s16le"]
@@ -215,7 +269,7 @@ def _write_tone(path: str, duration: float, kind: str = "voice") -> None:
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
-        Path(path).write_bytes(b"stub-audio")
+        raise RuntimeError(f"ffmpeg tone render failed for {path}")
 
 
 def _write_score(path: str, duration: float, freqs: Tuple[float, float, float]) -> None:
@@ -223,8 +277,7 @@ def _write_score(path: str, duration: float, freqs: Tuple[float, float, float]) 
     ff = _ffmpeg()
     dur = max(1.0, float(duration))
     if not ff:
-        Path(path).write_bytes(b"stub-music")
-        return
+        raise RuntimeError("ffmpeg is required to render music; install ffmpeg then resume the same job")
     fade = max(0.0, dur - 1.2)
     filt = (
         f"[0:a]volume=0.04[a];[1:a]volume=0.03[b];[2:a]volume=0.02[c];"
@@ -240,7 +293,7 @@ def _write_score(path: str, duration: float, freqs: Tuple[float, float, float]) 
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
-        Path(path).write_bytes(b"stub-music")
+        raise RuntimeError(f"ffmpeg score render failed for {path}")
 
 
 def cloud_tts(text: str, output_path: str, voice_name: str, rate: float, pitch: float) -> None:
