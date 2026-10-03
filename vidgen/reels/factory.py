@@ -187,6 +187,9 @@ class ReelFactory:
                 except Exception as exc:
                     log_event(job, event="upload_warn", error=str(exc)[:160])
                     job.final_video_uri = job.final_video_path
+            job.last_error = ""
+            job.failure_class = ""
+            job.repeat_failure_count = 0
             transition(job, ReelStatus.COMPLETE, f"Reel complete <= {MAX_DURATION_SECONDS}s", 100)
 
     def _lock_production_ref_durations(self, job: ReelJob) -> None:
