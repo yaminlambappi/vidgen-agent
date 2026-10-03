@@ -15,6 +15,7 @@ from vidgen.reels.duration import (
     DurationExceeded,
     assert_duration,
     assign_timeline,
+    current_cap,
     estimate_speech_seconds,
     plan_shot_durations,
     restructure_timeline,
@@ -520,7 +521,7 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
 
 def build_script(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) -> ReelScript:
     raw = _script_lines(brief, req, hook)
-    target = min(float(brief.duration_seconds), 30.0)
+    target = min(float(brief.duration_seconds), current_cap())
     # Speech should occupy ~55-70% of runtime; leave room for picture
     speech_budget = max(4.0, min(target * 0.68, target - 2.0))
     if brief.creative_type in {"COMEDY", "SKIT"} or _product_kind(req) == "saas":
@@ -668,8 +669,17 @@ def _shot_purposes(n: int, brief: CreativeBrief) -> List[str]:
     beats = list(brief.strategy_beats) or ["hook", "moment", "close"]
     if n <= 1:
         return [beats[0] if beats else "hook"]
+    if n > len(beats):
+        mid = beats[1:-1] or ["moment"]
+        out = [beats[0]]
+        i = 0
+        while len(out) < n - 1:
+            out.append(mid[i % len(mid)])
+            i += 1
+        out.append(beats[-1])
+        return out
     if n >= len(beats):
-        return beats[:n] if len(beats) >= n else beats + ["close"] * (n - len(beats))
+        return beats[:n]
     # Compress: first, middle..., last
     if n == 2:
         return [beats[0], beats[-1]]
@@ -683,7 +693,7 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     product = job.product_bible or ProductSpec(name="", shape="none")
     chars = job.character_bible or [build_character(brief, job.request)]
     char = chars[0]
-    target = min(float(brief.duration_seconds), 30.0)
+    target = min(float(brief.duration_seconds), current_cap())
     preferred = 2 if target <= 16 else 3 if target <= 24 else 4
     if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         preferred = 2 if target <= 20 else 3

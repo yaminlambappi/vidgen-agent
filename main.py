@@ -59,6 +59,15 @@ class ReelCreateRequest(BaseModel):
     dry_run: bool = False
 
 
+class DirectorCreateRequest(BaseModel):
+    idea: str = Field(..., min_length=3)
+    language: str = ""
+    duration_seconds: float = Field(0, ge=0, le=180, description="0 = parse from idea")
+    product_name: str = ""
+    cta: str = ""
+    dry_run: bool = True
+
+
 def _submit_cloud_run_job(project_id: str) -> dict:
     """
     Trigger a Cloud Run Job execution by calling the Cloud Run Jobs API.
@@ -346,8 +355,27 @@ def _reel_status_payload(job: ReelJob) -> dict:
         "failure_reason": job.last_error or None,
         "final_video_uri": job.final_video_uri or None,
         "dry_run_manifest": job.dry_run_manifest.model_dump() if job.dry_run_manifest else None,
+        "offer": job.dry_run_manifest.offer if job.dry_run_manifest else None,
         "qc": job.qc.model_dump() if job.qc else None,
     }
+
+
+@app.post("/api/v1/director")
+def create_director(payload: DirectorCreateRequest):
+    from vidgen.reels.director import run_director
+    try:
+        job = run_director(
+            idea=payload.idea,
+            duration_seconds=payload.duration_seconds or None,
+            language=payload.language,
+            product=payload.product_name,
+            cta=payload.cta,
+            live=not (payload.dry_run or settings.DRY_RUN),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    active_reels[job.job_id] = job
+    return _reel_status_payload(job)
 
 
 @app.post("/api/v1/reels")

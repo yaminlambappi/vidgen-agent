@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from vidgen.reels.constants import MAX_DURATION_SECONDS, REEL_FPS, REEL_HEIGHT, REEL_WIDTH
-from vidgen.reels.duration import assert_duration
+from vidgen.reels.duration import assert_duration, current_cap
 from vidgen.reels.schemas import ReelJob
 
 
@@ -52,7 +52,7 @@ def _has_audio_stream(path: str) -> bool:
 def write_compose_card(path: str, duration: float, title: str, language: str = "") -> None:
     """Deterministic 9:16 graphic beat — no Veo."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    dur = min(max(0.5, float(duration)), MAX_DURATION_SECONDS)
+    dur = min(max(0.5, float(duration)), current_cap())
     ff = _ffmpeg()
     text = (title or "").replace(":", "\\:").replace("'", "")[:90]
     font = "Noto Sans Bengali" if str(language).startswith("bengali") else "Noto Sans"
@@ -79,7 +79,7 @@ def write_compose_card(path: str, duration: float, title: str, language: str = "
 def write_vertical_plate(path: str, duration: float, color: str = "0x1a1a1a") -> None:
     """Generate a real 1080x1920 H.264/AAC plate (used in simulation and fallbacks)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    dur = min(max(0.5, float(duration)), MAX_DURATION_SECONDS)
+    dur = min(max(0.5, float(duration)), current_cap())
     ff = _ffmpeg()
     _run([
         ff, "-y", "-hide_banner", "-loglevel", "error",
@@ -125,8 +125,8 @@ def normalize_vertical(src: str, dst: str, duration: float, keep_audio: bool = F
     _run(cmd)
 
 
-def clamp_duration(src: str, dst: str, max_seconds: float = MAX_DURATION_SECONDS) -> None:
-    cap = min(float(max_seconds), MAX_DURATION_SECONDS)
+def clamp_duration(src: str, dst: str, max_seconds: Optional[float] = None) -> None:
+    cap = min(float(max_seconds if max_seconds is not None else current_cap()), current_cap())
     assert_duration(cap, "export clamp")
     ff = _ffmpeg()
     _run([
@@ -188,7 +188,7 @@ def assemble_reel(
         language=job.brief.language if job.brief else "",
         use_music=use_music,
     )
-    clamp_duration(mixed, output_path, min(total, MAX_DURATION_SECONDS))
+    clamp_duration(mixed, output_path, min(total, current_cap()))
     return output_path
 
 
@@ -274,7 +274,7 @@ def _mix(
     cmd += [
         "-filter_complex", ";".join(filters),
         "-map", "[v]", "-map", "[a]",
-        "-t", f"{min(duration, MAX_DURATION_SECONDS):.3f}",
+        "-t", f"{min(duration, current_cap()):.3f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",

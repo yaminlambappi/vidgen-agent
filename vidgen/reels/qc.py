@@ -92,12 +92,14 @@ def creative_qc(job: ReelJob) -> Dict[str, Any]:
         issues.append("missing hook")
     if not job.script or not job.script.full_text.strip():
         issues.append("missing script")
-    if job.script and job.script.estimated_speech_seconds > MAX_DURATION_SECONDS:
-        issues.append("speech exceeds 30s")
+    from vidgen.reels.duration import current_cap
+    cap = current_cap()
+    if job.script and job.script.estimated_speech_seconds > cap:
+        issues.append(f"speech exceeds {cap}s")
     if not job.storyboard or not job.storyboard.shots:
         issues.append("missing storyboard")
-    if job.storyboard and job.storyboard.total_duration > MAX_DURATION_SECONDS:
-        issues.append("storyboard exceeds 30s")
+    if job.storyboard and job.storyboard.total_duration > cap:
+        issues.append(f"storyboard exceeds {cap}s")
     if job.brief and job.brief.needs_cta and job.script and not job.script.cta_line:
         issues.append("missing CTA")
     if job.brief and job.brief.needs_product:
@@ -165,7 +167,8 @@ def run_qc(job: ReelJob, final_path: str) -> QCReport:
     failures = []
     if not tech.get("passed"):
         if not tech.get("duration_valid"):
-            failures.append(f"duration {tech.get('duration')} > {MAX_DURATION_SECONDS}")
+            from vidgen.reels.duration import current_cap
+            failures.append(f"duration {tech.get('duration')} > {current_cap()}")
         if not tech.get("aspect_ok"):
             failures.append(f"aspect {tech.get('width')}x{tech.get('height')} not 9:16")
         if not tech.get("has_audio"):

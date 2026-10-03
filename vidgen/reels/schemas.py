@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _uid() -> str:
@@ -127,16 +127,25 @@ class ReelRequest(BaseModel):
     assets: List[InputAsset] = Field(default_factory=list)
     variant_count: int = 1
     dry_run: bool = False
+    long_form: bool = False
 
     @field_validator("duration_seconds")
     @classmethod
-    def _cap_duration(cls, v: float) -> float:
-        from vidgen.reels.constants import MAX_DURATION_SECONDS
+    def _positive_duration(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("duration_seconds must be positive")
-        if v > MAX_DURATION_SECONDS:
-            raise ValueError(f"duration_seconds {v} exceeds MAX_DURATION_SECONDS={MAX_DURATION_SECONDS}")
         return float(v)
+
+    @model_validator(mode="after")
+    def _cap_duration(self):
+        from vidgen.reels.constants import DIRECTOR_MAX_SECONDS, MAX_DURATION_SECONDS
+        cap = DIRECTOR_MAX_SECONDS if self.long_form else MAX_DURATION_SECONDS
+        if self.duration_seconds > cap:
+            raise ValueError(
+                f"duration_seconds {self.duration_seconds} exceeds cap={cap} "
+                f"({'director' if self.long_form else 'reel'})"
+            )
+        return self
 
     @field_validator("variant_count")
     @classmethod

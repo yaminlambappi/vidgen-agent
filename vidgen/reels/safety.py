@@ -58,12 +58,19 @@ def variant_budget_multiplier(job: ReelJob) -> int:
 
 def budget_limits(job: ReelJob) -> dict[str, int]:
     n = variant_budget_multiplier(job)
+    veo_limit = settings.MAX_VEO_CALLS
+    if getattr(job.request, "long_form", False):
+        needed = max(veo_limit, int(job.request.duration_seconds // 4) + 2)
+        veo_limit = min(int(settings.MAX_DIRECTOR_VEO_CALLS), needed)
+    total_limit = settings.MAX_TOTAL_GENERATION_BUDGET
+    if getattr(job.request, "long_form", False):
+        total_limit = max(total_limit, veo_limit + 8)
     return {
-        "veo": settings.MAX_VEO_CALLS * n,
+        "veo": veo_limit * n,
         "image": settings.MAX_IMAGE_CALLS * n,
         "tts": settings.MAX_TTS_CALLS * n,
         "gemini": settings.MAX_GEMINI_CALLS * n,
-        "total": settings.MAX_TOTAL_GENERATION_BUDGET * n,
+        "total": total_limit * n,
         "pipeline_attempts": settings.MAX_PIPELINE_ATTEMPTS,
         "regen_per_shot": settings.MAX_REGENERATION_PER_SHOT,
         "runtime": settings.MAX_PIPELINE_RUNTIME,

@@ -156,7 +156,8 @@ def render_music(job: ReelJob, root: Path, duration: float) -> str:
         return ""
     path = root / "music.m4a"
     freqs = _mood_freqs(mood)
-    _write_score(str(path), min(duration, MAX_DURATION_SECONDS), freqs)
+    from vidgen.reels.duration import current_cap
+    _write_score(str(path), min(duration, current_cap()), freqs)
     if job.audio_plan:
         job.audio_plan.music_path = str(path)
     return str(path)

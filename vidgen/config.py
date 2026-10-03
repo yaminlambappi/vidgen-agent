@@ -35,6 +35,8 @@ class Settings:
     # ── Reels / Shorts factory ───────────────────────────────────────────────
     DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
     MAX_DURATION_SECONDS = float(os.getenv("MAX_DURATION_SECONDS", "30.0"))
+    DIRECTOR_MAX_SECONDS = float(os.getenv("DIRECTOR_MAX_SECONDS", "180.0"))
+    MAX_DIRECTOR_VEO_CALLS = int(os.getenv("MAX_DIRECTOR_VEO_CALLS", "24"))
     REEL_WIDTH = int(os.getenv("REEL_WIDTH", "1080"))
     REEL_HEIGHT = int(os.getenv("REEL_HEIGHT", "1920"))
     REEL_ASPECT_RATIO = os.getenv("REEL_ASPECT_RATIO", "9:16")

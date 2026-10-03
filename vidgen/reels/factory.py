@@ -23,7 +23,15 @@ from vidgen.reels.creative import build_storyboard, plan_production
 from vidgen.reels.offer import build_commercial_offer
 from vidgen.reels.watchability import score_watchability
 from vidgen.reels.llm import maybe_polish_script, maybe_write_comedy_script
-from vidgen.reels.duration import assert_duration, assign_timeline, legalize_shot_durations
+from vidgen.reels.duration import (
+    assert_duration,
+    assign_timeline,
+    bind_duration_cap,
+    current_cap,
+    job_duration_cap,
+    legalize_shot_durations,
+    reset_duration_cap,
+)
 from vidgen.reels.edit import assemble_reel, require_ffmpeg, should_burn_subtitles, write_compose_card, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
 from vidgen.reels.qc import run_qc
@@ -61,11 +69,15 @@ class ReelFactory:
         self.tts_fn = tts_fn
 
     def create(self, request: ReelRequest) -> ReelJob:
-        assert_duration(request.duration_seconds, "request")
-        fp = request_hash(request.model_dump())
-        job = ReelJob(request=request, request_hash=fp)
-        checkpoint(job, self.storage)
-        return job
+        token = bind_duration_cap(job_duration_cap(bool(request.long_form)))
+        try:
+            assert_duration(request.duration_seconds, "request")
+            fp = request_hash(request.model_dump())
+            job = ReelJob(request=request, request_hash=fp)
+            checkpoint(job, self.storage)
+            return job
+        finally:
+            reset_duration_cap(token)
 
     def run(self, job: ReelJob, dry_run: Optional[bool] = None) -> ReelJob:
         if job.job_id in BLOCKED_JOB_IDS or str(job.job_id).startswith("9237d967"):
@@ -89,34 +101,37 @@ class ReelFactory:
         root = settings.VIDGEN_WORK_ROOT / "reels" / job.job_id
         root.mkdir(parents=True, exist_ok=True)
         store = IdempotencyStore(root)
-
+        token = bind_duration_cap(job_duration_cap(bool(job.request.long_form)))
         try:
-            self._advance(job, dry, root, store)
-        except CostGuardTripped:
+            try:
+                self._advance(job, dry, root, store)
+            except CostGuardTripped:
+                checkpoint(job, self.storage)
+                return job
+            except Exception as exc:
+                klass = classify_failure(exc)
+                job.failure_class = klass.value
+                job.last_error = str(exc)[:500]
+                if klass != FailureClass.APPLICATION:
+                    try:
+                        note_repeat_failure(job, hashlib.sha256(str(exc).encode()).hexdigest())
+                    except CostGuardTripped:
+                        checkpoint(job, self.storage)
+                        return job
+                if job.status != ReelStatus.FAILED_COST_GUARD:
+                    try:
+                        transition(job, ReelStatus.FAILED, f"Pipeline failure: {exc}")
+                    except Exception:
+                        job.status = ReelStatus.FAILED
+                        job.message = str(exc)
+                checkpoint(job, self.storage)
+                if klass == FailureClass.TRANSIENT and is_retryable_failure(exc):
+                    raise
+                raise
             checkpoint(job, self.storage)
             return job
-        except Exception as exc:
-            klass = classify_failure(exc)
-            job.failure_class = klass.value
-            job.last_error = str(exc)[:500]
-            if klass != FailureClass.APPLICATION:
-                try:
-                    note_repeat_failure(job, hashlib.sha256(str(exc).encode()).hexdigest())
-                except CostGuardTripped:
-                    checkpoint(job, self.storage)
-                    return job
-            if job.status != ReelStatus.FAILED_COST_GUARD:
-                try:
-                    transition(job, ReelStatus.FAILED, f"Pipeline failure: {exc}")
-                except Exception:
-                    job.status = ReelStatus.FAILED
-                    job.message = str(exc)
-            checkpoint(job, self.storage)
-            if klass == FailureClass.TRANSIENT and is_retryable_failure(exc):
-                raise
-            raise
-        checkpoint(job, self.storage)
-        return job
+        finally:
+            reset_duration_cap(token)
 
     def _advance(self, job: ReelJob, dry: bool, root: Path, store: IdempotencyStore) -> None:
         resume = infer_resume_stage(job) if job.status in {ReelStatus.FAILED, ReelStatus.QUEUED} else job.status
@@ -214,7 +229,7 @@ class ReelFactory:
         veo_shots = [s for s in job.storyboard.shots if s.generation_strategy != "compose"]
         if not veo_shots:
             return
-        cap = min(float(job.storyboard.target_duration or job.request.duration_seconds), MAX_DURATION_SECONDS)
+        cap = min(float(job.storyboard.target_duration or job.request.duration_seconds), current_cap())
         legal = legalize_shot_durations([s.duration for s in veo_shots], cap)
         if len(legal) != len(veo_shots):
             veo_shots = veo_shots[:len(legal)]
@@ -242,7 +257,7 @@ class ReelFactory:
         kept = []
         total = 0.0
         for shot in job.storyboard.shots:
-            if total + 8.0 > MAX_DURATION_SECONDS:
+            if total + 8.0 > current_cap():
                 break
             shot.duration = 8.0
             kept.append(shot)
@@ -299,7 +314,7 @@ class ReelFactory:
         score = job.watchability or score_watchability(job)
         return DryRunManifest(
             target_duration=float(job.request.duration_seconds),
-            max_duration=MAX_DURATION_SECONDS,
+            max_duration=current_cap(),
             estimated_veo_calls=veo,
             estimated_image_calls=images,
             estimated_tts_calls=tts,
