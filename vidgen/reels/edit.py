@@ -304,7 +304,7 @@ def should_burn_subtitles(job: Optional[ReelJob] = None, language: str = "") -> 
     """Burned captions on talking-head/comedy cover the joke. Bengali tofu is worse."""
     from vidgen.config import settings
     brief = job.brief if job is not None else None
-    if brief and (brief.talking_head or brief.creative_type in {"COMEDY", "SKIT", "MEME"}):
+    if brief and (brief.talking_head or brief.creative_type in {"COMEDY", "SKIT", "MEME", "CINEMATIC"}):
         return False
     if not bool(settings.BURN_SUBTITLES):
         return False

@@ -132,8 +132,11 @@ def continuity_qc(job: ReelJob) -> Dict[str, Any]:
     location = {s.location for s in job.storyboard.shots}
     if len(wardrobe) > 1:
         issues.append("wardrobe changed across shots")
-    if len(location) > 1:
+    cinematic = bool(job.brief and job.brief.creative_type == "CINEMATIC")
+    if len(location) > 1 and not cinematic:
         issues.append("location changed across shots")
+    if cinematic and len(location) < 2 and len(job.storyboard.shots) > 3:
+        issues.append("cinematic plan never left one place")
     bible = {c.character_id for c in job.character_bible}
     used = set()
     for s in job.storyboard.shots:

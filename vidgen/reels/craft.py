@@ -38,7 +38,7 @@ def critique_plan(job: ReelJob) -> List[str]:
     else:
         first = board.shots[0]
         blob = " ".join([first.action or "", first.camera or "", first.framing or "", first.purpose or ""]).lower()
-        if not any(k in blob for k in _HOOK_TOKENS):
+        if not any(k in blob for k in _HOOK_TOKENS + ("weather", "rain", "street", "first frame")):
             issues.append("first shot does not open on a face or hook")
         if "back" in (first.action or "").lower() and "face" not in blob:
             issues.append("first shot can open on a back")

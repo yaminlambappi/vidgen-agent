@@ -4,6 +4,14 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
+from vidgen.reels.cinematic import (
+    cinematic_action,
+    cinematic_beats,
+    cinematic_camera,
+    cinematic_hooks,
+    cinematic_places,
+    cinematic_script,
+)
 from vidgen.reels.comedy import (
     comedy_action,
     comedy_location,
@@ -188,6 +196,7 @@ def build_brief(req: ReelRequest) -> CreativeBrief:
         "FACT": ("a surprising claim", "the reason", "the takeaway"),
         "STORY": ("a person already in trouble", "the turn", "the payoff"),
         "MEME": ("a recognizable setup", "the escalation", "the punch"),
+        "CINEMATIC": ("weather or a face already in it", "places that change", "a hold, not a slogan"),
     }.get(ctype, (
         "Face or a specific action in the first 0.7s — never an empty room",
         "One lived moment, then proof",
@@ -199,6 +208,7 @@ def build_brief(req: ReelRequest) -> CreativeBrief:
         "STORY": "Make the last second land",
         "ADVERTISEMENT": "Make the viewer interested enough to look up the product",
         "UGC": "Feel like a person, not a catalogue",
+        "CINEMATIC": "Make a place feel true for the whole runtime",
     }.get(ctype, "Earn the next second of attention")
     return CreativeBrief(
         objective=objective,
@@ -211,14 +221,19 @@ def build_brief(req: ReelRequest) -> CreativeBrief:
         dialect=dialect,
         duration_seconds=float(req.duration_seconds),
         tone="comic and dry" if ctype in {"COMEDY", "SKIT", "MEME"} else (
-            "clear and specific" if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"} else "natural"
+            "clear and specific" if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"} else (
+                "quiet, observational" if ctype == "CINEMATIC" else "natural"
+            )
         ),
         visual_style=style,
         narrative_structure=" → ".join(beats),
         cta=cta,
         acting_style="committed, unperformed, timing-aware",
         camera_style="motivated, mostly locked or slow handheld, 9:16 safe-area",
-        sound_direction="dialogue first; music only if the category needs it",
+        sound_direction=(
+            "picture and weather first; sparse VO" if ctype == "CINEMATIC"
+            else "dialogue first; music only if the category needs it"
+        ),
         content_mode=mode,
         look_into_camera=talking,
         talking_head=talking,
@@ -372,6 +387,8 @@ def _category_hooks(brief: CreativeBrief, req: ReelRequest) -> dict:
             "curiosity": ("I still remember the exact second.", "Face already mid-memory."),
             "relatable_situation": ("I stopped with my hand on the door.", "A real door."),
         }
+    if ctype == "CINEMATIC":
+        return cinematic_hooks(idea, lang)
     if not brief.needs_product:
         topic = idea[:48] or "this"
         if lang.startswith("bengali"):
@@ -405,13 +422,9 @@ def build_hooks(brief: CreativeBrief, req: ReelRequest) -> HookStrategy:
         "ADVERTISEMENT": "direct_statement",
     }.get(brief.creative_type, "curiosity")
     for i, approach in enumerate(HOOK_APPROACHES):
-        if approach not in lines and approach not in {"surprise", "visual_interruption", "emotional_moment", "transformation", "pattern_interrupt"}:
+        if approach not in lines:
             continue
-        if approach in lines:
-            line, visual = lines[approach]
-        else:
-            line = lines["curiosity"][0]
-            visual = "Pattern interrupt: product enters frame from a real pocket or bag."
+        line, visual = lines[approach]
         score = 0.72 + (0.2 if approach == preferred else 0.0) - i * 0.01
         concepts.append(HookConcept(
             approach=approach, concept=f"{approach} hook for {product}",
@@ -455,6 +468,8 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
             "I took one breath outside the door.",
             "Then I went in.",
         ]
+    if ctype == "CINEMATIC":
+        return cinematic_script(req.idea, lang)
     if not brief.needs_product:
         extra = "এমন হয়েছে তোমারও।" if lang.startswith("bengali") else "You have been here."
         close = "এইটুকুই।" if lang.startswith("bengali") else "That's the whole thing."
@@ -524,7 +539,7 @@ def build_script(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) -> 
     target = min(float(brief.duration_seconds), current_cap())
     # Speech should occupy ~55-70% of runtime; leave room for picture
     speech_budget = max(4.0, min(target * 0.68, target - 2.0))
-    if brief.creative_type in {"COMEDY", "SKIT"} or _product_kind(req) == "saas":
+    if brief.creative_type in {"COMEDY", "SKIT", "CINEMATIC"} or _product_kind(req) == "saas":
         # Punchline / CTA is the last line. Never trim it to fit a budget.
         joke = estimate_speech_seconds(" ".join(raw), brief.language)
         return _finalize_script(brief, raw, target, max(speech_budget, joke + 0.4))
@@ -666,6 +681,8 @@ def build_brand(brief: CreativeBrief, req: ReelRequest) -> BrandBible:
 
 
 def _shot_purposes(n: int, brief: CreativeBrief) -> List[str]:
+    if brief.creative_type == "CINEMATIC":
+        return cinematic_beats(n)
     beats = list(brief.strategy_beats) or ["hook", "moment", "close"]
     if n <= 1:
         return [beats[0] if beats else "hook"]
@@ -707,9 +724,12 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     purposes = _shot_purposes(len(spans), brief)
     lines = script.body_lines
     situation = detect_situation(job.request.idea if job.request else "")
+    cinematic = brief.creative_type == "CINEMATIC"
+    places = cinematic_places(job.request.idea if job.request else "", len(spans)) if cinematic else []
     location = {
         "COMEDY": comedy_location(situation),
         "SKIT": comedy_location(situation),
+        "CINEMATIC": (places[0] if places else "a real street already in weather"),
         "EDUCATIONAL": "plain room, one practical lamp, nothing decorative",
         "EXPLAINER": "plain room, one practical lamp, nothing decorative",
         "FACT": "plain room, one practical lamp, nothing decorative",
@@ -726,8 +746,10 @@ def build_storyboard(job: ReelJob) -> Storyboard:
             line = lines[min(i, len(lines) - 1)].text if lines else ""
         talking = bool(brief.talking_head) and purpose not in {"explanation", "compose", "graphic"}
         comedy = brief.creative_type in {"COMEDY", "SKIT"}
+        here = places[i] if places else location
+        cam, frame, light = cinematic_camera(i, len(spans)) if cinematic else ("", "", "")
         gaze = "at the other person across the desk" if comedy else (
-            "just past the lens, as if talking to one friend" if talking else "on the other person or the object"
+            "just past the lens, as if talking to one friend" if talking else "on the weather, the street, or the other person"
         )
         who = [c.character_id for c in chars]
         if purpose in {"punchline", "escalation", "setup"} and len(chars) > 1:
@@ -741,29 +763,39 @@ def build_storyboard(job: ReelJob) -> Storyboard:
             purpose=purpose,
             characters=who,
             character_state=char.emotional_baseline,
-            location=location,
-            environment=f"{location}. Real clutter at edges. No studio sweep.",
+            location=here,
+            environment=f"{here}. Real clutter at edges. No studio sweep. No empty apartment.",
             wardrobe=(
                 f"{chars[0].wardrobe} | {chars[1].wardrobe}"
                 if comedy and len(chars) > 1 else char.wardrobe
             ),
             product_state=product.correct_usage if (brief.needs_product and "product" in purpose) else "",
-            action=_action_for(purpose, product, char, brief.creative_type, chars, situation),
-            dialogue=line,
+            action=(
+                cinematic_action(here, purpose, char.name)
+                if cinematic else
+                _action_for(purpose, product, char, brief.creative_type, chars, situation)
+            ),
+            dialogue="" if cinematic else line,
             camera=(
                 "locked third-person medium TWO-SHOT, both faces visible, camera on a desk or shelf — NEVER a selfie, NEVER first-person, NEVER a phone in a hand"
                 if comedy else
-                ("phone-height close-up on face" if str(purpose).startswith("hook") else "medium close-up")
+                (cam if cinematic else (
+                    "phone-height close-up on face" if str(purpose).startswith("hook") else "medium close-up"
+                ))
             ),
             framing=(
                 "9:16, both people in frame from the first frame. Desk between them. No empty room, no selfie arm."
                 if comedy else
-                "9:16, FIRST FRAME has a face, a conflict, or a specific object. Never an empty table."
+                (frame if cinematic else
+                 "9:16, FIRST FRAME has a face, a conflict, or a specific object. Never an empty table.")
             ),
             generation_strategy="compose" if compose else "veo",
             lens_look="28-35mm equivalent, natural contrast, no anamorphic flare",
             camera_motion="locked — no orbit, no handheld selfie sway" if comedy else "locked or 10cm motivated drift — never random orbit",
-            lighting="overhead fluorescent, slightly ugly, no beauty dish" if comedy else "available window + practical lamp, no beauty dish",
+            lighting=(
+                "overhead fluorescent, slightly ugly, no beauty dish" if comedy else
+                (light if cinematic else "available window + practical lamp, no beauty dish")
+            ),
             visual_style=brief.visual_style,
             sound=_sound_for(purpose, product.name),
             music="low bed, ducked",
@@ -771,17 +803,25 @@ def build_storyboard(job: ReelJob) -> Storyboard:
             continuity_requirements=[
                 "same wardrobe", "same hair", "same two people",
                 "same time of day", "same office desk",
-            ] if comedy else [
-                "same wardrobe", "same hair", "same product bottle",
-                "same time of day", "same location geography",
-            ],
+            ] if comedy else (
+                [
+                    "same person if they appear", "same rain day", "same wet wardrobe",
+                    "same overcast sky", "Dhaka streets not a generic city",
+                ] if cinematic else [
+                    "same wardrobe", "same hair", "same product bottle",
+                    "same time of day", "same location geography",
+                ]
+            ),
             negative_constraints=[
                 "plastic skin", "malformed hands", "invented logo",
                 "changed clothes", "floating product", "fake lens flare",
                 "looking at camera" if not talking else "exaggerated presenter smile",
             ] + (["selfie", "first-person", "phone in a hand", "one person only", "empty office"] if comedy else []),
             performance=PerformanceDirection(
-                objective="play the wrong-answer joke, not sell a product" if comedy else "own the product privately, not sell it",
+                objective=(
+                    "play the wrong-answer joke, not sell a product" if comedy else
+                    ("live in the weather, do not present" if cinematic else "own the product privately, not sell it")
+                ),
                 emotional_state=char.emotional_baseline,
                 subtext="this is already part of their day",
                 body_language="unforced shoulders, real weight in the hands",

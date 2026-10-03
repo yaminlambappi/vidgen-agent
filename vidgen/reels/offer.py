@@ -16,7 +16,15 @@ def build_commercial_offer(job: ReelJob) -> Dict[str, Any]:
     rent = float(settings.FACTORY_LIST_PRICE_USD)
     variants = []
     if job.hook:
-        variants = [c.line for c in (job.hook.concepts or []) if (c.line or "").strip()][:3]
+        seen = set()
+        for c in job.hook.concepts or []:
+            line = (c.line or "").strip()
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            variants.append(line)
+            if len(variants) >= 3:
+                break
     return {
         "product": "VidGen Shorts Factory",
         "what_you_rent": (

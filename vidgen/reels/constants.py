@@ -36,6 +36,9 @@ GENERIC_OPENINGS = (
     "আজকের দ্রুতগতির বিশ্বে",
     "আজকের ব্যস্ত জীবনে",
     "আপনি কি ক্লান্ত",
+    "watch this for one second",
+    "that's the whole thing",
+    "you have been here",
 )
 
 CONTENT_MODES = (
