@@ -5,6 +5,7 @@ import hashlib
 import re
 from typing import List, Tuple
 
+from vidgen.reels.comedy import comedy_cast, detect_situation
 from vidgen.reels.language import has_bengali
 from vidgen.reels.schemas import CharacterSpec, ProductSpec, ReelRequest
 
@@ -76,18 +77,17 @@ def build_cast(req: ReelRequest, language: str, creative_type: str) -> List[Char
     n = min(2, _count_from_idea(req.idea))
     gender = _gender_from_idea(req.idea)
     specs: List[CharacterSpec] = []
-    if creative_type in {"COMEDY", "SKIT"}:
+    if creative_type in {"COMEDY", "SKIT", "MEME"}:
+        (n1, r1, w1), (n2, r2, w2) = comedy_cast(detect_situation(req.idea), bd)
         specs.append(_person(
-            "Rafi" if bd else "Ray", "man", "24-28", bd, language,
-            role="candidate",
-            wardrobe="slightly tight white shirt, cheap dark tie, nervous crease",
+            n1, "man" if r1 not in {"mother"} else "woman", "24-28", bd, language,
+            role=r1, wardrobe=w1,
             personality="overconfident, answers before listening",
             voice="bright, too eager",
         ))
         specs.append(_person(
-            "Kabir" if bd else "Hassan", "man", "38-46", bd, language,
-            role="interviewer",
-            wardrobe="plain pale office shirt, no tie, tired eyes",
+            n2, "woman" if r2 in {"mother"} else "man", "38-46" if r2 != "friend" else "24-28",
+            bd, language, role=r2, wardrobe=w2,
             personality="exhausted, professionally polite",
             voice="flat, dry",
         ))

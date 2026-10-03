@@ -4,6 +4,12 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
+from vidgen.reels.comedy import (
+    comedy_action,
+    comedy_location,
+    comedy_script_lines,
+    detect_situation,
+)
 from vidgen.reels.constants import CONTENT_MODES, GENERIC_OPENINGS, HOOK_APPROACHES
 from vidgen.reels.duration import (
     DurationExceeded,
@@ -407,21 +413,8 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
     hook_line = (hook.chosen.line if hook.chosen else "").strip()
     kind = _product_kind(req)
     ctype = brief.creative_type
-    if ctype in {"COMEDY", "SKIT"}:
-        # The joke IS the Q&A. Do not prepend a hook monologue that polish can flatten into.
-        if lang.startswith("bengali"):
-            return [
-                "ইন্টারভিউয়ার: আপনার নাম কী?",
-                "ছেলে: জি… খুব ভালো।",
-                "ইন্টারভিউয়ার: না, নাম।",
-                "ছেলে: স্যার… প্রশ্নটা আবার?",
-            ]
-        return [
-            "Interviewer: What is your name?",
-            "Candidate: Yes. Very good.",
-            "Interviewer: Your name.",
-            "Candidate: Sorry — one more time?",
-        ]
+    if ctype in {"COMEDY", "SKIT", "MEME"}:
+        return comedy_script_lines(req.idea, lang)
     if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         if lang.startswith("bengali"):
             return [
@@ -546,10 +539,22 @@ def _finalize_script(brief: CreativeBrief, texts: List[str], target: float, spee
 
 def _speaker_for(brief: CreativeBrief, text: str, index: int) -> str:
     t = (text or "").lower()
-    if "ইন্টারভিউয়ার" in text or t.startswith("interviewer"):
+    label = t.split(":", 1)[0].strip() if ":" in t else ""
+    mapping = {
+        "ইন্টারভিউয়ার": "interviewer", "interviewer": "interviewer",
+        "ছেলে": "candidate", "candidate": "candidate",
+        "বস": "boss", "boss": "boss",
+        "জুনিয়র": "junior", "junior": "junior",
+        "মা": "mother", "mom": "mother", "mother": "mother",
+        "ড্রাইভার": "driver", "driver": "driver",
+        "যাত্রী": "passenger", "passenger": "passenger",
+        "বন্ধু": "friend", "friend": "friend",
+        "student": "student",
+    }
+    if label in mapping:
+        return mapping[label]
+    if "ইন্টারভিউয়ার" in text:
         return "interviewer"
-    if "ছেলে:" in text or t.startswith("candidate"):
-        return "candidate"
     return "talent" if brief.talking_head else "narrator"
 
 
@@ -658,9 +663,10 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     spans = assign_timeline(durations)
     purposes = _shot_purposes(len(spans), brief)
     lines = script.body_lines
+    situation = detect_situation(job.request.idea if job.request else "")
     location = {
-        "COMEDY": "small Dhaka office, cheap desk, fluorescent tubes, locked camera on a shelf opposite the desk",
-        "SKIT": "small Dhaka office, cheap desk, fluorescent tubes, locked camera on a shelf opposite the desk",
+        "COMEDY": comedy_location(situation),
+        "SKIT": comedy_location(situation),
         "EDUCATIONAL": "plain room, one practical lamp, nothing decorative",
         "EXPLAINER": "plain room, one practical lamp, nothing decorative",
         "FACT": "plain room, one practical lamp, nothing decorative",
@@ -699,7 +705,7 @@ def build_storyboard(job: ReelJob) -> Storyboard:
                 if comedy and len(chars) > 1 else char.wardrobe
             ),
             product_state=product.correct_usage if (brief.needs_product and "product" in purpose) else "",
-            action=_action_for(purpose, product, char, brief.creative_type, chars),
+            action=_action_for(purpose, product, char, brief.creative_type, chars, situation),
             dialogue=line,
             camera=(
                 "locked third-person medium TWO-SHOT, both faces visible, camera on a desk or shelf — NEVER a selfie, NEVER first-person, NEVER a phone in a hand"
@@ -764,15 +770,18 @@ def _pronouns(char: CharacterSpec) -> tuple[str, str]:
     return ("He", "his") if he else ("She", "her")
 
 
-def _action_for(purpose: str, product: ProductSpec, char: CharacterSpec, ctype: str = "", cast: Optional[List[CharacterSpec]] = None) -> str:
+def _action_for(
+    purpose: str,
+    product: ProductSpec,
+    char: CharacterSpec,
+    ctype: str = "",
+    cast: Optional[List[CharacterSpec]] = None,
+    situation: str = "",
+) -> str:
     she, her = _pronouns(char)
     other = (cast[1].name if cast and len(cast) > 1 else "the other person")
-    if ctype in {"COMEDY", "SKIT"}:
-        return (
-            f"THIRD-PERSON two-shot. {char.name} (candidate, cheap tie) sits across a cheap desk from {other} (interviewer, no tie). "
-            f"FIRST FRAME shows both faces. {char.name} answers every question wrongly and too fast. "
-            f"{other} stares, tired, does not laugh. They do not look into a phone. No selfie arm. Same room the whole take."
-        )
+    if ctype in {"COMEDY", "SKIT", "MEME"}:
+        return comedy_action(situation or "office", char.name, other)
     if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         if str(purpose).startswith("hook") or purpose == "question":
             return f"FIRST FRAME is {char.name}'s face saying the claim, or a single clear object. No landscape."

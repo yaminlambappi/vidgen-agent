@@ -8,12 +8,38 @@ from vidgen.reels.safety import IdempotencyStore, PermanentGenerationError, exec
 from vidgen.reels.schemas import CreativeBrief, ReelJob, ReelScript, ScriptLine
 
 
+def maybe_write_comedy_script(job: ReelJob, store: IdempotencyStore, dry: bool) -> None:
+    """One Gemini pass that must stay a two-person joke. Never the name/very-good gag."""
+    if dry or settings.DRY_RUN or not settings.is_production:
+        return
+    if not job.brief or not job.script:
+        return
+    if job.brief.creative_type not in {"COMEDY", "SKIT", "MEME"}:
+        return
+    try:
+        execute_expensive(
+            job,
+            kind="gemini",
+            operation="comedy_write",
+            model=settings.GEMINI_MODEL,
+            prompt=job.request.idea if job.request else job.script.full_text,
+            inputs={"language": job.brief.language, "situation": "comedy"},
+            store=store,
+            fn=lambda: _write_comedy(job),
+            dry_run=False,
+        )
+    except PermanentGenerationError:
+        return
+    except Exception:
+        return
+
+
 def maybe_polish_script(job: ReelJob, store: IdempotencyStore, dry: bool) -> None:
     if dry or settings.DRY_RUN or not settings.is_production:
         return
     if not job.brief or not job.script:
         return
-    # Comedy/skit jokes die when flattened into a single "confident" line.
+    # Flattening a two-person joke into one "confident" line kills it.
     if job.brief.creative_type in {"COMEDY", "SKIT", "MEME"}:
         return
     try:
@@ -43,6 +69,55 @@ def _polish_acceptable(brief: CreativeBrief, text: str) -> bool:
     if brief.language.startswith("bengali") and not has_bengali(text):
         return False
     return True
+
+
+def _write_comedy(job: ReelJob) -> str:
+    from google import genai
+    from google.genai import types
+    from vidgen.reels.comedy import detect_situation, joke_is_usable, parse_joke_lines
+    from vidgen.reels.creative import _finalize_script
+    from vidgen.reels.duration import estimate_speech_seconds
+
+    brief: CreativeBrief = job.brief
+    idea = job.request.idea if job.request else ""
+    situation = detect_situation(idea)
+    lang_rule = (
+        "Write ONLY spoken Dhaka Bangla. Every line needs Bengali letters. "
+        "English nouns (salary, LinkedIn, deadline) are fine. Do not translate the whole joke."
+        if brief.language.startswith("bengali") else
+        "Write spoken English. Short. No sitcom winks."
+    )
+    prompt = (
+        "You write 8-second Reels people actually forward on WhatsApp.\n"
+        f"IDEA: {idea}\n"
+        f"SITUATION: {situation}\n"
+        f"{lang_rule}\n"
+        "FORM: exactly 4 lines, each `Speaker: line`.\n"
+        "Two people only. Setup, wrong-confident answer, dry correction, worse double-down.\n"
+        "Punchline must add new information. Do not explain the joke.\n"
+        "FORBIDDEN lines and premises: asking someone's name; "
+        "'জি খুব ভালো'; 'প্রশ্নটা আবার'; 'পুরা কনফিডেন্ট'; "
+        "'I am extremely prepared'; a product pitch; a narrator; one person monologue.\n"
+        "Sound like a Dhaka office forward, not a textbook, not an ad.\n"
+        "Return ONLY the 4 labeled lines."
+    )
+    client = genai.Client(
+        vertexai=True,
+        project=settings.GOOGLE_CLOUD_PROJECT,
+        location=settings.GOOGLE_CLOUD_LOCATION,
+    )
+    r = client.models.generate_content(
+        model=settings.GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(temperature=0.95, max_output_tokens=400),
+    )
+    lines = parse_joke_lines(r.text or "")
+    if not joke_is_usable(lines, brief.language):
+        raise PermanentGenerationError("comedy writer returned a lame or unusable joke")
+    target = min(float(brief.duration_seconds), 30.0)
+    joke = estimate_speech_seconds(" ".join(lines), brief.language)
+    job.script = _finalize_script(brief, lines, target, max(4.0, joke + 0.4))
+    return "comedy_written"
 
 
 def _polish(job: ReelJob) -> str:

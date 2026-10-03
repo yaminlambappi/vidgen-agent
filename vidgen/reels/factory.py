@@ -21,7 +21,7 @@ from vidgen.reels.assets import apply_compose_strategy, plan_assets, resolve_ass
 from vidgen.reels.constants import BLOCKED_JOB_IDS, MAX_DURATION_SECONDS
 from vidgen.reels.creative import build_storyboard, plan_production
 from vidgen.reels.watchability import score_watchability
-from vidgen.reels.llm import maybe_polish_script
+from vidgen.reels.llm import maybe_polish_script, maybe_write_comedy_script
 from vidgen.reels.duration import assert_duration, assign_timeline, legalize_shot_durations
 from vidgen.reels.edit import assemble_reel, require_ffmpeg, should_burn_subtitles, write_compose_card, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
@@ -127,6 +127,7 @@ class ReelFactory:
         if job.status == ReelStatus.PLANNING:
             if not job.brief or not job.script:
                 plan_production(job)
+            maybe_write_comedy_script(job, store, dry)
             maybe_polish_script(job, store, dry)
             if job.brief and job.script:
                 job.storyboard = build_storyboard(job)

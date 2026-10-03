@@ -82,8 +82,10 @@ class TestAssetlessPlans(unittest.TestCase):
         self.assertIn("two-shot", first.camera.lower())
         self.assertIn("never a selfie", first.camera.lower())
         self.assertNotIn("phone-height close-up", first.camera.lower())
-        self.assertIn("নাম", job.script.full_text)
-        self.assertIn("প্রশ্নটা আবার", job.script.full_text)
+        self.assertNotIn("আপনার নাম কী", job.script.full_text)
+        self.assertNotIn("প্রশ্নটা আবার", job.script.full_text)
+        self.assertNotIn("খুব ভালো", job.script.full_text)
+        self.assertGreaterEqual(job.script.full_text.count(":"), 3)
         prompt = (first.generation_prompt or "").lower()
         self.assertIn("two people", prompt)
         self.assertIn("never selfie", prompt)
@@ -164,10 +166,23 @@ class TestWatchabilityAndQC(unittest.TestCase):
     def test_duration_cap(self):
         self.assertEqual(MAX_DURATION_SECONDS, 30.0)
 
+    def test_lame_name_joke_is_banned(self):
+        from vidgen.reels.comedy import comedy_script_lines, detect_situation, is_lame_comedy
+
+        self.assertTrue(is_lame_comedy("ইন্টারভিউয়ার: আপনার নাম কী? ছেলে: জি খুব ভালো।"))
+        lines = comedy_script_lines(
+            "Make a funny Bengali reel where a guy goes to a job interview and answers every question wrongly",
+            "bengali",
+        )
+        self.assertFalse(is_lame_comedy(" ".join(lines)))
+        self.assertEqual(detect_situation("funny Dhaka traffic jam reel"), "traffic")
+        traffic = comedy_script_lines("Make a funny Bengali reel about Dhaka traffic", "bengali")
+        self.assertFalse(any("ইন্টারভিউয়ার" in ln for ln in traffic))
+
     def test_comedy_skips_polish_and_burned_captions(self):
         from unittest.mock import patch
         from vidgen.reels.edit import should_burn_subtitles
-        from vidgen.reels.llm import maybe_polish_script
+        from vidgen.reels.llm import maybe_polish_script, maybe_write_comedy_script
 
         job = ReelJob(request=_req(
             "একটা funny Bengali Reel বানাও যেখানে একজন ছেলে interview দিতে গিয়ে confident ভাবে সব প্রশ্নের ভুল উত্তর দেয়",
@@ -179,6 +194,8 @@ class TestWatchabilityAndQC(unittest.TestCase):
             s.DRY_RUN = False
             s.is_production = True
             maybe_polish_script(job, store=None, dry=False)
+            ex.assert_not_called()
+            maybe_write_comedy_script(job, store=None, dry=True)
             ex.assert_not_called()
 
 
