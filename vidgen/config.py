@@ -52,6 +52,8 @@ class Settings:
     MAX_TOTAL_GENERATION_BUDGET = int(os.getenv("MAX_TOTAL_GENERATION_BUDGET", "20"))
     MAX_REEL_SHOTS = int(os.getenv("MAX_REEL_SHOTS", "6"))
     CIRCUIT_BREAKER_REPEAT_FAILURES = int(os.getenv("CIRCUIT_BREAKER_REPEAT_FAILURES", "2"))
+    MAX_REPAIR_ATTEMPTS = int(os.getenv("MAX_REPAIR_ATTEMPTS", "1"))
+    PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 
     VIDGEN_WORK_ROOT = Path(os.getenv("VIDGEN_WORK_ROOT", "/tmp/vidgen"))
 

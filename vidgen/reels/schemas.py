@@ -40,6 +40,29 @@ class ReelLanguage(str, Enum):
     BILINGUAL = "bengali_english"
 
 
+class CreativeType(str, Enum):
+    ADVERTISEMENT = "ADVERTISEMENT"
+    UGC = "UGC"
+    COMEDY = "COMEDY"
+    SKIT = "SKIT"
+    STORY = "STORY"
+    EDUCATIONAL = "EDUCATIONAL"
+    EXPLAINER = "EXPLAINER"
+    FACT = "FACT"
+    TUTORIAL = "TUTORIAL"
+    REVIEW = "REVIEW"
+    REACTION = "REACTION"
+    MEME = "MEME"
+    LIFESTYLE = "LIFESTYLE"
+    MOTIVATIONAL = "MOTIVATIONAL"
+    CINEMATIC = "CINEMATIC"
+    NEWS_STYLE = "NEWS_STYLE"
+    PRODUCT_DEMO = "PRODUCT_DEMO"
+    TESTIMONIAL = "TESTIMONIAL"
+    PROMOTIONAL = "PROMOTIONAL"
+    OTHER = "OTHER"
+
+
 class ContentMode(str, Enum):
     UGC = "UGC"
     PRODUCT_DEMO = "PRODUCT_DEMO"
@@ -56,6 +79,17 @@ class ContentMode(str, Enum):
     PROBLEM_SOLUTION = "PROBLEM_SOLUTION"
     BEFORE_AFTER = "BEFORE_AFTER"
     PRODUCT_REVEAL = "PRODUCT_REVEAL"
+    EDUCATIONAL = "EDUCATIONAL"
+    EXPLAINER = "EXPLAINER"
+    FACT = "FACT"
+    TUTORIAL = "TUTORIAL"
+    REVIEW = "REVIEW"
+    REACTION = "REACTION"
+    MEME = "MEME"
+    MOTIVATIONAL = "MOTIVATIONAL"
+    NEWS_STYLE = "NEWS_STYLE"
+    PROMOTIONAL = "PROMOTIONAL"
+    SKIT = "SKIT"
 
 
 class FailureClass(str, Enum):
@@ -137,6 +171,14 @@ class CreativeBrief(BaseModel):
     forbidden_claims: List[str] = Field(default_factory=list)
     allowed_claims: List[str] = Field(default_factory=list)
     cultural_notes: str = ""
+    why_watch: str = ""
+    why_stay: str = ""
+    why_act: str = ""
+    creative_type: str = "OTHER"
+    strategy_beats: List[str] = Field(default_factory=list)
+    needs_product: bool = False
+    needs_cta: bool = False
+    fictional_product: bool = False
 
 
 class HookConcept(BaseModel):
@@ -189,6 +231,7 @@ class CharacterSpec(BaseModel):
     emotional_baseline: str = ""
     speaking_style: str = ""
     reference_uri: str = ""
+    role: str = "talent"
 
 
 class ProductSpec(BaseModel):
@@ -207,6 +250,9 @@ class ProductSpec(BaseModel):
     orientation: str = ""
     reference_uris: List[str] = Field(default_factory=list)
     user_image_authoritative: bool = False
+    fictional: bool = False
+    brand_name: str = ""
+    required: bool = False
 
 
 class BrandBible(BaseModel):
@@ -272,6 +318,8 @@ class ReelShot(BaseModel):
     prompt_hash: str = ""
     attempts: int = 0
     native_audio: bool = False
+    generation_strategy: str = "veo"  # veo|compose|source|still_motion|prompt_lock
+    asset_ids: List[str] = Field(default_factory=list)
 
 
 class Storyboard(BaseModel):
@@ -350,6 +398,60 @@ class GenerationLedger(BaseModel):
     events: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class AssetNeed(BaseModel):
+    asset_id: str = Field(default_factory=_uid)
+    kind: str = "character"  # character|product|environment|graphic|stock|audio
+    name: str = ""
+    required: bool = True
+    strategy: str = "generate_in_prompt"  # generate_image|generate_in_prompt|source|compose|user
+    reason: str = ""
+    query: str = ""
+    source: str = ""
+    provider: str = ""
+    license: str = ""
+    uri: str = ""
+    local_path: str = ""
+    status: str = "planned"
+
+
+class AssetPlan(BaseModel):
+    needs: List[AssetNeed] = Field(default_factory=list)
+    generated: int = 0
+    sourced: int = 0
+    prompt_locked: int = 0
+    composed: int = 0
+
+
+class WatchabilityScore(BaseModel):
+    hook_strength: float = 0.0
+    clarity: float = 0.0
+    pacing: float = 0.0
+    visual_interest: float = 0.0
+    payoff: float = 0.0
+    audio_quality: float = 0.0
+    language_quality: float = 0.0
+    asset_consistency: float = 0.0
+    social_native_quality: float = 0.0
+    total: float = 0.0
+    passed: bool = False
+    notes: List[str] = Field(default_factory=list)
+
+
+class ProductionManifest(BaseModel):
+    creative_type: str = ""
+    language: str = ""
+    duration: float = 0.0
+    strategy_beats: List[str] = Field(default_factory=list)
+    characters: List[Dict[str, Any]] = Field(default_factory=list)
+    assets: List[Dict[str, Any]] = Field(default_factory=list)
+    shots: List[Dict[str, Any]] = Field(default_factory=list)
+    script: str = ""
+    audio: Dict[str, Any] = Field(default_factory=dict)
+    captions: Dict[str, Any] = Field(default_factory=dict)
+    budget: Dict[str, Any] = Field(default_factory=dict)
+    gates: List[str] = Field(default_factory=list)
+
+
 class DryRunManifest(BaseModel):
     target_duration: float
     max_duration: float
@@ -364,6 +466,19 @@ class DryRunManifest(BaseModel):
     language: str = ""
     talking_head: bool = False
     expensive_calls_made: int = 0
+    creative_type: str = ""
+    creative_strategy: List[str] = Field(default_factory=list)
+    characters: List[str] = Field(default_factory=list)
+    assets_required: List[str] = Field(default_factory=list)
+    assets_to_generate: List[str] = Field(default_factory=list)
+    assets_to_source: List[str] = Field(default_factory=list)
+    script: str = ""
+    storyboard: List[str] = Field(default_factory=list)
+    voice_plan: str = ""
+    audio_plan: str = ""
+    caption_plan: str = ""
+    qc_gates: List[str] = Field(default_factory=list)
+    watchability: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QCReport(BaseModel):
@@ -372,6 +487,8 @@ class QCReport(BaseModel):
     creative: Dict[str, Any] = Field(default_factory=dict)
     visual: Dict[str, Any] = Field(default_factory=dict)
     audio: Dict[str, Any] = Field(default_factory=dict)
+    captions: Dict[str, Any] = Field(default_factory=dict)
+    watchability: Dict[str, Any] = Field(default_factory=dict)
     failures: List[str] = Field(default_factory=list)
 
 
@@ -394,6 +511,10 @@ class ReelJob(BaseModel):
     ledger: GenerationLedger = Field(default_factory=GenerationLedger)
     qc: Optional[QCReport] = None
     dry_run_manifest: Optional[DryRunManifest] = None
+    asset_plan: Optional[AssetPlan] = None
+    production_manifest: Optional[ProductionManifest] = None
+    watchability: Optional[WatchabilityScore] = None
+    repair_attempts: int = 0
     final_video_uri: str = ""
     final_video_path: str = ""
     failure_class: str = ""

@@ -1,4 +1,4 @@
-"""Veo prompt compiler for controlled short Reel shots."""
+"""Veo prompt compiler — scene prose a DP would give, not a compliance form."""
 from __future__ import annotations
 
 from typing import List, Optional
@@ -14,83 +14,78 @@ def compile_shot_prompt(
     brief = job.brief
     product = job.product_bible or ProductSpec()
     char = _char(job, shot)
-    parts: List[str] = [
-        "PHOTOGRAPHIC VERTICAL SOCIAL VIDEO SHOT. 9:16. Photorealistic. "
-        "Single continuous take. No text, no captions, no watermark, no logo overlay, no subtitles.",
-        "REALISM MANDATE: real skin texture, real hands, believable physics, real weight in objects. "
-        "No plastic skin, no beauty-filter face, no exaggerated expression, no impossible anatomy.",
-        f"FORMAT: 1080x1920, 9:16, {shot.duration:.0f} seconds, social-native pacing.",
-    ]
-    if brief:
-        parts.append(
-            f"MODE: {brief.content_mode}. TONE: {brief.tone}. "
-            f"VISUAL: {brief.visual_style}. CAMERA STYLE: {brief.camera_style}."
-        )
-        if brief.talking_head and shot.talking_head:
-            parts.append(
-                "SYNCED SPEECH: the person visibly says the dialogue below. "
-                "Mouth motion must match the line. Do not invent extra spoken words."
-            )
-        else:
-            parts.append(
-                "NO VISIBLE SPEECH: the person does not talk to camera. "
-                "If a mouth moves, it is a breath or a small unvoiced reaction only."
-            )
+    spoken = (shot.dialogue or "").strip()
+    talking = bool(shot.talking_head and spoken)
 
-    if product.name:
-        parts.append(
-            f"PRODUCT IDENTITY (DO NOT REDESIGN): {product.name}. "
-            f"SHAPE: {product.shape}. PACKAGING: {product.packaging}. "
-            f"COLORS: {product.colors}. LABELS: {product.labels}. "
-            f"USAGE: {product.correct_usage}. ORIENTATION: {product.orientation}."
-        )
-        if product.user_image_authoritative:
-            parts.append(
-                "The supplied product image is AUTHORITATIVE. "
-                "Do not invent logos, do not change the bottle, do not hallucinate label text."
-            )
-
+    who = ""
     if char:
-        parts.append(
-            f"CHARACTER IDENTITY (DO NOT ALTER): {char.name}, {char.age}. "
-            f"APPEARANCE: {char.appearance}. FACE: {char.face}. SKIN: {char.skin}. "
-            f"HAIR: {char.hair}. WARDROBE: {char.wardrobe}. ACCESSORIES: {char.accessories}. "
-            f"MANNERISMS: {char.mannerisms}."
+        who = (
+            f"{char.name}, {char.age}, {char.appearance}. "
+            f"Hair: {char.hair}. Face: {char.face}. Skin: {char.skin}. "
+            f"Wearing {char.wardrobe}. Same person for the whole reel."
         )
 
-    parts.append(f"SHOT PURPOSE: {shot.purpose}.")
-    parts.append(f"ACTION: {shot.action}")
-    if shot.dialogue and shot.talking_head:
-        parts.append(f"SPOKEN LINE (exact): {shot.dialogue}")
-    if shot.performance:
-        p = shot.performance
-        parts.append(
-            f"PERFORMANCE: objective={p.objective}; emotion={p.emotional_state}; "
-            f"subtext={p.subtext}; body={p.body_language}; gaze={p.gaze}; "
-            f"gesture={p.gesture}; face={p.facial_reaction}; intensity={p.delivery_intensity}."
-        )
-    parts.append(f"ENVIRONMENT: {shot.environment}")
-    parts.append(
-        f"CAMERA: {shot.camera}; framing={shot.framing}; look={shot.lens_look}; "
-        f"motion={shot.camera_motion}."
+    perfume = bool(product.required) and (
+        "atomizer" in (product.shape or "").lower() or "perfume" in (product.name or "").lower()
     )
-    parts.append(f"LIGHTING: {shot.lighting}.")
-    parts.append(f"SOUND IN FRAME: {shot.sound}.")
+    product_lock = ""
+    if product.required and product.name:
+        product_lock = f"{product.name}: {product.shape}. {product.distinctive_details or product.correct_usage}."
+        if perfume:
+            product_lock += (
+                " This is a perfume atomizer with liquid and a spray nozzle. "
+                "Forbidden stand-ins: wine bottle, water bottle, empty flask, kitchen glass."
+            )
+    if product.user_image_authoritative:
+        product_lock += " Match the supplied product photo exactly. Do not invent a logo."
 
-    if previous:
-        parts.append(
-            f"CONTINUITY FROM {previous.shot_id}: same person, same wardrobe, same product, "
-            f"same location time-of-day. Previous action was: {previous.action}"
+    lang = (brief.language if brief else "english")
+    he = bool(char and "man" in (char.appearance or "").lower())
+    they = "He" if he else "She"
+    speak_note = ""
+    if talking:
+        tongue = "conversational Bangladeshi Bangla" if str(lang).startswith("bengali") else "casual English"
+        speak_note = (
+            f"{they} speaks naturally in {tongue}. "
+            f'Exact line, no extra words: "{spoken}". Mouth must match the line. Generate native synced audio.'
         )
-    if shot.continuity_requirements:
-        parts.append("MUST PRESERVE: " + "; ".join(shot.continuity_requirements))
+    else:
+        speak_note = f"{they} does not talk. No visible speech, no extra voice."
+
+    hook_rule = ""
+    if shot.purpose.startswith("hook"):
+        hook_obj = "the atomizer in their hands" if perfume else "the product in their hands"
+        hook_rule = (
+            f"SCROLL-STOP: frame 1 must be their face or {hook_obj}. "
+            "Never open on a back, a lamp, a wall, or an empty table."
+        )
+
+    continuity = ""
+    if previous and char:
+        continuity = (
+            f"Same person as the previous shot: same face, hair, {char.wardrobe}, same apartment, same time of day. "
+            f"Same {product.name} bottle shape."
+        )
+
+    scene = " ".join(x for x in [
+        f"Vertical 9:16 photorealistic phone video, one continuous {int(round(shot.duration))}s take.",
+        hook_rule,
+        who,
+        f"Place: {shot.environment}",
+        f"Action: {shot.action}",
+        product_lock,
+        speak_note,
+        f"Camera: {shot.camera}. {shot.framing}. {shot.lens_look}. Motion: {shot.camera_motion}.",
+        f"Light: {shot.lighting}. Handheld social, not a luxury catalogue.",
+        continuity,
+        "No on-screen text, captions, logos, watermarks, or subtitles.",
+        "Real skin texture, real hands, real weight. No plastic beauty filter.",
+    ] if x)
 
     negs = list(shot.negative_constraints) + [
-        "malformed hands", "warped product label", "changing face",
-        "studio infinity backdrop", "stock-video smile", "random camera orbit",
+        "wine bottle", "empty glass bottle", "back of head as first frame",
+        "malformed hands", "changed actor", "on-screen text", "garbled letters",
     ]
-    parts.append("DO NOT GENERATE: " + " | ".join(negs))
-
     refs = []
     if product.reference_uris:
         for uri in product.reference_uris:
@@ -105,14 +100,13 @@ def compile_shot_prompt(
             "metadata": {"role": "character_identity", "mime_type": "image/png"},
         })
 
-    prompt = "\n".join(parts)
-    shot.generation_prompt = prompt
+    shot.generation_prompt = scene
     return {
-        "prompt": prompt,
-        "reference_assets": refs[:3],  # Veo reference slot is small
+        "prompt": scene,
+        "reference_assets": refs[:3],
         "aspect_ratio": "9:16",
         "duration": int(round(shot.duration)),
-        "generate_audio": bool(shot.native_audio and shot.talking_head),
+        "generate_audio": talking,
         "negative": " | ".join(negs),
     }
 

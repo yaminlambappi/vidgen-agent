@@ -10,10 +10,19 @@ from vidgen.reels.duration import (
     assert_duration,
     assign_timeline,
     estimate_speech_seconds,
-    normalize_language,
     plan_shot_durations,
     restructure_timeline,
 )
+from vidgen.reels.identity import build_cast, build_fictional_or_named_product
+from vidgen.reels.intent import (
+    classify_intent,
+    content_mode_for,
+    needs_cta,
+    needs_product,
+    strategy_beats,
+    talking_head_for,
+)
+from vidgen.reels.language import infer_language, is_garbled_caption
 from vidgen.reels.schemas import (
     BrandBible,
     CharacterSpec,
@@ -50,13 +59,13 @@ _MODE_RULES = [
     (ContentMode.STREET_STYLE, ("street", "dhaka", "market", "রাস্তা", "ঢাকা")),
     (ContentMode.DIRECT_RESPONSE_AD, ("buy now", "order", "limited", "offer", "cta hard")),
     (ContentMode.PROBLEM_SOLUTION, ("problem", "tired of", "fix", "solution")),
-    (ContentMode.PRODUCT_REVEAL, ("reveal", "launch", "new", "unbox")),
-    (ContentMode.BEFORE_AFTER, ("before", "after", "transform")),
+    (ContentMode.PRODUCT_REVEAL, ("reveal", "launch", "unbox", "unboxing")),
+    (ContentMode.BEFORE_AFTER, ("before after", "before-and-after", "transform")),
     (ContentMode.EMOTIONAL, ("emotional", "memory", "mother", "gift")),
-    (ContentMode.INTERVIEW, ("interview", "ask", "q&a")),
-    (ContentMode.STORYTELLING, ("story", "once", "narrative")),
-    (ContentMode.CINEMATIC_COMMERCIAL, ("cinematic", "film", "cinematic commercial")),
-    (ContentMode.LIFESTYLE_COMMERCIAL, ("lifestyle", "premium", "everyday")),
+    (ContentMode.INTERVIEW, ("interview", "q&a", "q and a")),
+    (ContentMode.STORYTELLING, ("storytelling", "narrative short")),
+    (ContentMode.CINEMATIC_COMMERCIAL, ("cinematic commercial", "film look")),
+    (ContentMode.LIFESTYLE_COMMERCIAL, ("lifestyle commercial", "catalogue", "lookbook")),
 ]
 
 
@@ -87,18 +96,7 @@ def choose_content_mode(req: ReelRequest) -> str:
             return ContentMode[key].value
         except Exception:
             pass
-    blob = _blob(req)
-    for mode, keys in _MODE_RULES:
-        if any(k in blob for k in keys):
-            return mode.value
-    kind = _product_kind(req)
-    if kind in {"perfume", "skincare", "fashion"}:
-        return ContentMode.LIFESTYLE_COMMERCIAL.value
-    if kind in {"food"}:
-        return ContentMode.STREET_STYLE.value
-    if kind in {"saas", "finance"}:
-        return ContentMode.DIRECT_RESPONSE_AD.value
-    return ContentMode.UGC.value
+    return content_mode_for(classify_intent(req))
 
 
 def _looks_generic(text: str) -> bool:
@@ -106,71 +104,122 @@ def _looks_generic(text: str) -> bool:
     return any(low.startswith(g) or g in low[:80] for g in GENERIC_OPENINGS)
 
 
+_NAME_SKIP = {
+    "create", "make", "reel", "reels", "shorts", "short", "video", "ad", "ads",
+    "advertisement", "commercial", "social", "media", "instagram", "tiktok",
+    "bengali", "bangla", "english", "second", "seconds", "this", "that", "with",
+    "from", "for", "the", "and", "realistic", "premium", "natural", "authentic",
+    "everyday", "subtle", "believable", "strong", "first", "young", "bangladeshi",
+    "actor", "environment", "look", "acting", "voice", "hook", "style", "audience",
+    "professionals", "people", "about", "into", "your", "our", "product",
+}
+
+
 def _infer_name(req: ReelRequest) -> str:
     if req.product_name.strip():
         return req.product_name.strip()
-    # First quoted or capitalized token after "for this/the"
-    m = re.search(r"(?:for this|for the|product[:\s]+)\s*([A-Za-z\u0980-\u09FF][\w\u0980-\u09FF' -]{1,40})", req.idea, re.I)
-    if m:
-        return m.group(1).strip(" .")
+    quoted = re.search(r"[\"“]([^\"”]{2,40})[\"”]", req.idea)
+    if quoted:
+        return quoted.group(1).strip()
+    named = re.search(
+        r"(?:called|named|brand[:\s]+|product[:\s]+)\s*([A-Z][A-Za-z\u0980-\u09FF' -]{1,40})",
+        req.idea,
+    )
+    if named:
+        return named.group(1).strip(" .")
+    kind = _product_kind(req)
+    kind_names = {
+        "perfume": "the perfume",
+        "skincare": "the serum",
+        "food": "the food",
+        "fashion": "the piece",
+        "saas": "the app",
+        "finance": "the wallet",
+    }
+    if kind in kind_names:
+        return kind_names[kind]
     words = [w for w in re.findall(r"[A-Za-z\u0980-\u09FF][\w\u0980-\u09FF'-]+", req.idea) if len(w) > 2]
-    skip = {"create", "make", "reel", "shorts", "bengali", "english", "second", "seconds", "this", "that", "with", "from"}
     for w in words:
-        if w.lower() not in skip:
+        if w.lower() not in _NAME_SKIP:
             return w
     return "the product"
 
 
 def build_brief(req: ReelRequest) -> CreativeBrief:
-    lang = normalize_language(req.language)
+    lang = infer_language(req.language, req.idea)
+    ctype = classify_intent(req)
     mode = choose_content_mode(req)
     kind = _product_kind(req)
-    product = _infer_name(req)
+    want_product = needs_product(ctype, req)
+    want_cta = needs_cta(ctype)
+    product = _infer_name(req) if want_product else ""
     audience = req.audience.strip() or (
-        "young Bangladeshi professionals" if lang.startswith("bengali") else "young urban professionals"
+        "young Bangladeshi viewers" if lang.startswith("bengali") else "young urban viewers"
     )
-    talking = mode in {ContentMode.UGC.value, ContentMode.FOUNDER_STYLE.value, ContentMode.INTERVIEW.value, ContentMode.TESTIMONIAL.value}
-    cinematic = mode == ContentMode.CINEMATIC_COMMERCIAL.value
+    talking = talking_head_for(ctype)
+    cinematic = ctype == "CINEMATIC"
     style = req.style.strip() or (
-        "premium but realistic, handheld-adjacent, natural light"
-        if not cinematic else "controlled cinematic commercial, still realistic"
+        "phone-native, realistic, motivated camera"
+        if not cinematic else "controlled cinematic short, still human"
     )
     dialect = "conversational Bangladeshi Bangla (Dhaka)" if lang.startswith("bengali") else "natural conversational English"
     if lang == "bengali_english":
-        dialect = "Banglish — conversational Bangla with natural English product names"
-    cta = req.cta.strip() or (
-        "পেজে গিয়ে দেখো" if lang == "bengali" else
-        "পেজে গিয়ে দেখো / check the page" if lang == "bengali_english" else
-        "Check the product page"
-    )
-    visual = {
-        ContentMode.UGC.value: "phone-native, slightly imperfect, real room, real skin texture",
-        ContentMode.STREET_STYLE.value: "Dhaka-adjacent daylight, real streets, no stock-travel look",
-        ContentMode.PRODUCT_DEMO.value: "clean tabletop + real hands, product-true colors",
-        ContentMode.LIFESTYLE_COMMERCIAL.value: "lived-in premium interior, naturalistic beauty, no plastic skin",
-        ContentMode.DIRECT_RESPONSE_AD.value: "clear product, readable CTA, fast social pacing",
-        ContentMode.CINEMATIC_COMMERCIAL.value: "composed but human, motivated camera, no fake flares",
-    }.get(mode, "realistic, socially native, commercially clear")
+        dialect = "Banglish — conversational Bangla with natural English nouns"
+    cta = ""
+    if want_cta:
+        cta = req.cta.strip() or (
+            "পেজে গিয়ে দেখো" if lang == "bengali" else
+            "পেজে গিয়ে দেখো / check the page" if lang == "bengali_english" else
+            "Check the product page"
+        )
+    beats = strategy_beats(ctype, float(req.duration_seconds))
+    why = {
+        "COMEDY": ("a face mid-mistake in the first 0.7s", "escalation they recognize", "the punchline"),
+        "SKIT": ("a face mid-mistake in the first 0.7s", "the situation getting worse", "the button"),
+        "EDUCATIONAL": ("a surprising claim or object", "one clean explanation", "a line they can repeat"),
+        "EXPLAINER": ("a surprising claim or object", "one clean explanation", "a line they can repeat"),
+        "FACT": ("a surprising claim", "the reason", "the takeaway"),
+        "STORY": ("a person already in trouble", "the turn", "the payoff"),
+        "MEME": ("a recognizable setup", "the escalation", "the punch"),
+    }.get(ctype, (
+        "Face or a specific action in the first 0.7s — never an empty room",
+        "One lived moment, then proof",
+        "One short close, not a banner" if not want_cta else "One short CTA, spoken like a friend",
+    ))
+    objective = req.goal.strip() or {
+        "COMEDY": "Make someone send this to a friend",
+        "EDUCATIONAL": "Leave the viewer with one thing they did not know",
+        "STORY": "Make the last second land",
+        "ADVERTISEMENT": "Make the viewer interested enough to look up the product",
+        "UGC": "Feel like a person, not a catalogue",
+    }.get(ctype, "Earn the next second of attention")
     return CreativeBrief(
-        objective=req.goal.strip() or "Make the viewer interested enough to visit the product page",
+        objective=objective,
         target_audience=audience,
-        product_positioning=f"{product} as a realistic everyday upgrade, not a fantasy luxury prop",
-        emotional_objective="curiosity plus quiet confidence, never hype",
-        creative_concept=f"{mode.replace('_', ' ').title()} for {product}: a real person, a real moment, the product used correctly",
+        product_positioning=(f"{product} as a real object, used correctly" if want_product else ""),
+        emotional_objective="curiosity plus recognition, never hype",
+        creative_concept=f"{ctype}: {req.idea.strip()[:160]}",
         platform=req.platform or "instagram_reels",
         language=lang,
         dialect=dialect,
         duration_seconds=float(req.duration_seconds),
-        tone="premium-but-real" if "premium" in style.lower() else "natural and trustworthy",
-        visual_style=style or visual,
-        narrative_structure="hook → lived moment → product truth → simple CTA",
+        tone="comic and dry" if ctype in {"COMEDY", "SKIT", "MEME"} else (
+            "clear and specific" if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"} else "natural"
+        ),
+        visual_style=style,
+        narrative_structure=" → ".join(beats),
         cta=cta,
-        acting_style="restrained, private, no exaggerated AI expressions",
+        acting_style="committed, unperformed, timing-aware",
         camera_style="motivated, mostly locked or slow handheld, 9:16 safe-area",
-        sound_direction="room tone, product foley, music ducked under voice",
+        sound_direction="dialogue first; music only if the category needs it",
         content_mode=mode,
         look_into_camera=talking,
         talking_head=talking,
+        creative_type=ctype,
+        strategy_beats=beats,
+        needs_product=want_product,
+        needs_cta=want_cta,
+        fictional_product=want_product and not bool(req.product_name.strip()),
         forbidden_claims=[
             "invented testimonials", "invented statistics", "medical claims",
             "awards", "celebrity endorsement", "guarantees",
@@ -180,39 +229,158 @@ def build_brief(req: ReelRequest) -> CreativeBrief:
             "Bangladesh social-media speech; no Indian-film formal Bangla unless requested."
             if lang.startswith("bengali") else "Avoid corporate advertising English."
         ),
+        why_watch=why[0],
+        why_stay=why[1],
+        why_act=why[2],
     )
 
 
-def build_hooks(brief: CreativeBrief, req: ReelRequest) -> HookStrategy:
-    product = _infer_name(req)
-    lang = brief.language
-    kind = _product_kind(req)
+def _hook_bank(lang: str, product: str, kind: str) -> dict:
     if lang.startswith("bengali"):
-        lines = {
-            "curiosity": (f"{product}টা একবার শুঁকলেই মাথায় থেকে যায়।", "Close on a wrist, then the bottle — no logo punch-in yet."),
-            "problem": ("সারাদিন অফিস... গায়ে সেই একই ডিও।", "Tired office light, then a small personal reset."),
-            "relatable_situation": ("বন্ধুরা জিজ্ঞেস করে, নতুন কিছু লাগছে তো?", "Casual mirror check, not a commercial stare."),
-            "product_reveal": (f"এটা {product}। বাহিরের মতো লাগানোর দরকার নেই।", "Hands place the real bottle on a real table."),
-            "direct_statement": (f"{product} জোর করে সুন্দর লাগায় না। নিজের মতো রাখে।", "Quiet close-up, no smile-to-camera."),
-            "question": ("তোমার সিগনেচার স্মেল আছে?", "Someone pauses mid-leave, sniffs a sleeve."),
+        banks = {
+            "perfume": {
+                "curiosity": (f"{product}টা একবার শুঁকলেই মাথায় থেকে যায়।", "Close on a wrist, then the bottle — no logo punch-in yet."),
+                "problem": ("সারাদিন অফিস... গায়ে সেই একই ডিও।", "Tired office light, then a small personal reset."),
+                "relatable_situation": ("বন্ধুরা জিজ্ঞেস করে, নতুন কিছু লাগছে তো?", "Casual mirror check, not a commercial stare."),
+                "product_reveal": (f"এটা {product}। বাহিরের মতো লাগানোর দরকার নেই।", "Hands place the real bottle on a real table."),
+                "direct_statement": (f"{product} জোর করে সুন্দর লাগায় না। নিজের মতো রাখে।", "Quiet close-up, no smile-to-camera."),
+                "question": ("তোমার সিগনেচার স্মেল আছে?", "Someone pauses mid-leave, sniffs a sleeve."),
+            },
+            "skincare": {
+                "curiosity": ("আয়নায় একবার দেখলেই বোঝা যায়, ত্বকটা শান্ত।", "Bathroom mirror, no beauty ring."),
+                "problem": ("সারাদিন এসি... মুখ শুকিয়ে কাগজ।", "Office-tired skin, then a small reset."),
+                "relatable_situation": ("বন্ধুরা বলে, স্কিনকারে কিছু করছ নাকি?", "Phone-height, real sink, real light."),
+                "product_reveal": (f"এটা {product}। জোর করে গ্লো না।", "Pump, one dot, press."),
+                "direct_statement": (f"{product} নাটক করে না। কাজ করে।", "Hands only, product true."),
+                "question": ("ত্বকটা কি সারাদিন রাগ করে থাকে?", "A pause before leaving the house."),
+            },
+            "food": {
+                "curiosity": (f"{product}— গন্ধটা রাস্তা থেকেই ধরা যায়।", "Steam, real plate, no food-porn glaze."),
+                "problem": ("বাইরের খাবারে একই তেল, একই ক্লান্তি।", "A real table, late afternoon."),
+                "relatable_situation": ("এক কাপ, তারপর আর কথা নেই।", "Hands around a warm cup."),
+                "product_reveal": (f"এটা {product}। ঘরে যেমন, এখানেও।", "Real pour or plated bite."),
+                "direct_statement": (f"{product} চিৎকার করে না। তুলে খাওয়া যায়।", "Close on food, then a face."),
+                "question": ("আজকে কি সত্যি খেতে ইচ্ছে করছে?", "A look down at the plate."),
+            },
         }
-    else:
-        lines = {
-            "curiosity": (f"This {kind} stays on you without announcing itself.", "Wrist, then bottle. No logo slam."),
+        default = {
+            "curiosity": (f"{product}টা একবার দেখলেই মাথায় থেকে যায়।", "Face, then the thing in hand."),
+            "problem": ("সারাদিন একই রুটিন। একটু বদল দরকার।", "Real room, late light."),
+            "relatable_situation": ("কেউ জিজ্ঞেস করল, নতুন কিছু নাকি?", "Talking to one friend, not an ad."),
+            "product_reveal": (f"এটা {product}। যেমন ব্যবহার করি, তেমন।", "Real hands."),
+            "direct_statement": (f"{product} অভিনয় করে না।", "Still, honest framing."),
+            "question": ("এটা কি তোমার দরকার?", "A small pause."),
+        }
+        return banks.get(kind, default)
+    banks = {
+        "perfume": {
+            "curiosity": (f"{product} stays on you without announcing itself.", "Wrist, then bottle. No logo slam."),
             "problem": ("Long day. Same tired scent on your shirt.", "Office-tired, then a private reset."),
-            "relatable_situation": ("Someone asked if I got a new perfume.", "Mirror, not a hard sell."),
+            "relatable_situation": ("Someone asked if I changed my scent.", "Mirror, not a hard sell."),
             "product_reveal": (f"This is {product}. Used the way you actually use it.", "Real hands, real packaging."),
             "direct_statement": (f"{product} doesn't perform luxury. It sits close.", "Still, honest framing."),
             "question": ("Do you have a scent people remember?", "A pause before leaving the room."),
+        },
+        "skincare": {
+            "curiosity": ("My face stopped looking tired before I did.", "Bathroom mirror, no ring light."),
+            "problem": ("AC all day. Skin like paper.", "Office-tired, then a press of serum."),
+            "relatable_situation": ("Someone asked what I changed. It was this.", "Sink, real light."),
+            "product_reveal": (f"This is {product}. Dot, press, leave.", "Hands, pump, no smear theatre."),
+            "direct_statement": (f"{product} does not perform glow. It sits in.", "Still, honest framing."),
+            "question": ("Does your skin stay angry until night?", "A pause at the door."),
+        },
+        "food": {
+            "curiosity": (f"You smell {product} before you see it.", "Steam, real plate."),
+            "problem": ("Same oily takeout. Same afternoon crash.", "A real table."),
+            "relatable_situation": ("I went quiet after the first sip.", "Hands on a cup."),
+            "product_reveal": (f"This is {product}. The way it actually comes.", "Pour or plated bite."),
+            "direct_statement": (f"{product} does not shout. You just eat.", "Food, then a face."),
+            "question": ("When did you last want a second plate?", "A look down."),
+        },
+    }
+    default = {
+        "curiosity": (f"{product} makes more sense in a real room than in an ad.", "Face, then the object."),
+        "problem": ("Same routine. Need one honest change.", "Real room, late light."),
+        "relatable_situation": ("Someone asked if this was new.", "Talking to one friend."),
+        "product_reveal": (f"This is {product}. Used like a person uses it.", "Real hands."),
+        "direct_statement": (f"{product} does not perform. It works.", "Still, honest framing."),
+        "question": ("Do you actually need this, or just another ad?", "A small pause."),
+    }
+    return banks.get(kind, default)
+
+
+def _category_hooks(brief: CreativeBrief, req: ReelRequest) -> dict:
+    lang = brief.language
+    ctype = brief.creative_type
+    idea = (req.idea or "").strip()
+    if ctype in {"COMEDY", "SKIT", "MEME"}:
+        if lang.startswith("bengali"):
+            return {
+                "curiosity": ("স্যার, আমি একদম ready।", "Face already answering, too confident."),
+                "relatable_situation": ("ইন্টারভিউতে ঢুকলাম। মনে মনে full marks।", "Phone-height across a cheap office desk."),
+                "direct_statement": ("প্রশ্ন শুনেও উত্তর দিয়ে ফেলি।", "Mouth already moving."),
+                "question": ("এই প্রশ্নটা কি সিরিয়াস?", "Blink, then double down."),
+            }
+        return {
+            "curiosity": ("I am extremely prepared.", "Face already answering."),
+            "relatable_situation": ("Walked in like I had the job.", "Cheap office, phone height."),
+            "direct_statement": ("I answer before I hear the question.", "Mouth already moving."),
+            "question": ("Was that a real question?", "Blink, then double down."),
         }
+    if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
+        if lang.startswith("bengali"):
+            return {
+                "curiosity": ("কালো গহ্বর আলোকেও খেয়ে ফেলে।", "A dark circle, then a face saying it."),
+                "question": ("আলো কেন বেরোতে পারে না?", "One object, one question."),
+                "direct_statement": ("Escape velocity আলোর চেয়ে বেশি।", "Hands drawing a simple orbit."),
+            }
+        return {
+            "curiosity": ("A black hole can eat light.", "Object, then a face."),
+            "question": ("Why can't light leave?", "One object, one question."),
+            "direct_statement": ("Escape velocity is faster than light.", "Hands, simple orbit."),
+        }
+    if ctype == "STORY":
+        if lang.startswith("bengali"):
+            return {
+                "curiosity": ("সেই দিনটা আমি ভুলতে পারিনি।", "Face already mid-memory."),
+                "relatable_situation": ("বাসায় ফিরে দরজাটা ধরে দাঁড়ালাম।", "Hand on a real door."),
+            }
+        return {
+            "curiosity": ("I still remember the exact second.", "Face already mid-memory."),
+            "relatable_situation": ("I stopped with my hand on the door.", "A real door."),
+        }
+    if not brief.needs_product:
+        topic = idea[:48] or "this"
+        if lang.startswith("bengali"):
+            return {
+                "curiosity": ("এটা একবার দেখলেই মাথায় থেকে যায়।", "Face or action already happening."),
+                "relatable_situation": ("এমন হয়েছে তোমারও।", "A real room, late light."),
+                "direct_statement": ("কথাটা ছোট, কিন্তু সত্যি।", "Still, honest framing."),
+            }
+        return {
+            "curiosity": ("Watch this for one second.", "Face or action already happening."),
+            "relatable_situation": ("You have been in this room.", "A real room."),
+            "direct_statement": ("Short, and true.", "Still, honest framing."),
+        }
+    return _hook_bank(lang, _infer_name(req), _product_kind(req))
+
+
+def build_hooks(brief: CreativeBrief, req: ReelRequest) -> HookStrategy:
+    product = _infer_name(req) if brief.needs_product else (brief.creative_type or "reel")
+    lang = brief.language
+    lines = _category_hooks(brief, req)
     concepts: List[HookConcept] = []
     preferred = {
-        ContentMode.UGC.value: "relatable_situation",
-        ContentMode.PRODUCT_REVEAL.value: "product_reveal",
-        ContentMode.PROBLEM_SOLUTION.value: "problem",
-        ContentMode.DIRECT_RESPONSE_AD.value: "direct_statement",
-        ContentMode.EMOTIONAL.value: "emotional_moment",
-    }.get(brief.content_mode, "curiosity")
+        "COMEDY": "relatable_situation",
+        "SKIT": "relatable_situation",
+        "MEME": "relatable_situation",
+        "EDUCATIONAL": "curiosity",
+        "EXPLAINER": "question",
+        "FACT": "curiosity",
+        "STORY": "curiosity",
+        "UGC": "relatable_situation",
+        "ADVERTISEMENT": "direct_statement",
+    }.get(brief.creative_type, "curiosity")
     for i, approach in enumerate(HOOK_APPROACHES):
         if approach not in lines and approach not in {"surprise", "visual_interruption", "emotional_moment", "transformation", "pattern_interrupt"}:
             continue
@@ -233,30 +401,82 @@ def build_hooks(brief: CreativeBrief, req: ReelRequest) -> HookStrategy:
 
 
 def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) -> List[str]:
-    product = _infer_name(req)
+    product = _infer_name(req) if brief.needs_product else ""
     lang = brief.language
     hook_line = (hook.chosen.line if hook.chosen else "").strip()
+    kind = _product_kind(req)
+    ctype = brief.creative_type
+    if ctype in {"COMEDY", "SKIT"}:
+        if lang.startswith("bengali"):
+            return [
+                hook_line or "স্যার, আমি একদম ready।",
+                "ইন্টারভিউয়ার: আপনার নাম কী?",
+                "ছেলে: জি… খুব ভালো।",
+                "ইন্টারভিউয়ার: না, নাম।",
+                "ছেলে: স্যার… প্রশ্নটা আবার?",
+            ]
+        return [
+            hook_line or "I am extremely prepared.",
+            "Interviewer: What is your name?",
+            "Candidate: Yes. Very good.",
+            "Interviewer: Your name.",
+            "Candidate: Sorry — one more time?",
+        ]
+    if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
+        if lang.startswith("bengali"):
+            return [
+                hook_line or "কালো গহ্বর আলোকেও খেয়ে ফেলে।",
+                "এত ভারী যে বেরোতে গেলে আলোর চেয়েও দ্রুত যেতে হয়।",
+                "তাই কিছু বেরোয় না — আলোও না।",
+            ]
+        return [
+            hook_line or "A black hole can eat light.",
+            "Gravity is so strong escape speed is faster than light.",
+            "So nothing leaves. Not even light.",
+        ]
+    if ctype == "STORY":
+        if lang.startswith("bengali"):
+            return [
+                hook_line or "সেই দিনটা আমি ভুলতে পারিনি।",
+                "দরজার বাইরে দাঁড়িয়ে একবার শ্বাস নিলাম।",
+                "তারপর ঢুকলাম।",
+            ]
+        return [
+            hook_line or "I still remember the exact second.",
+            "I took one breath outside the door.",
+            "Then I went in.",
+        ]
+    if not brief.needs_product:
+        extra = "এমন হয়েছে তোমারও।" if lang.startswith("bengali") else "You have been here."
+        close = "এইটুকুই।" if lang.startswith("bengali") else "That's the whole thing."
+        return [hook_line or extra, extra, close]
     if lang == "bengali":
-        body = [
-            hook_line,
-            "জোরে ঘোষণা করার মতো কিছু না। কাছে এলেই বোঝা যায়।",
-            f"{product} এমন, যেটা নিজের মতো লাগানো যায়।",
-            brief.cta,
-        ]
+        mid = {
+            "perfume": "জোরে ঘোষণা করার মতো কিছু না। কাছে এলেই বোঝা যায়।",
+            "skincare": "জোর করে গ্লো না। একটু হলেই বোঝা যায়।",
+            "food": "চিৎকার করে না। তুলে খেলেই বোঝা যায়।",
+        }.get(kind, "জোরে বলার মতো কিছু না। কাছে এলেই বোঝা যায়।")
+        body = [hook_line, mid, f"{product} এমন, যেটা নিজের মতো ব্যবহার করা যায়।"]
+        if brief.needs_cta and brief.cta:
+            body.append(brief.cta)
     elif lang == "bengali_english":
-        body = [
-            hook_line,
-            f"{product}টা loud না। কাছে এলেই catch হয়।",
-            "Office থেকে বেরোনোর আগে একটু — that's it.",
-            brief.cta,
-        ]
+        mid = {
+            "perfume": f"{product}টা loud না। কাছে এলেই catch হয়।",
+            "skincare": f"{product}টা dramatic না। মুখে দিলেই বোঝা যায়।",
+            "food": f"{product}টা extra না। এক বাইটেই ধরা যায়।",
+        }.get(kind, f"{product}টা loud না। কাছে এলেই বোঝা যায়।")
+        body = [hook_line, mid, "Office থেকে বেরোনোর আগে একটু — that's it."]
+        if brief.needs_cta and brief.cta:
+            body.append(brief.cta)
     else:
-        body = [
-            hook_line,
-            "It doesn't announce itself. You notice it when someone leans in.",
-            f"{product} is for the version of you that already left the house.",
-            brief.cta,
-        ]
+        mid = {
+            "perfume": "It doesn't announce itself. You notice it when someone leans in.",
+            "skincare": "It doesn't perform glow. You notice it in the afternoon light.",
+            "food": "It doesn't shout. You just want the next bite.",
+        }.get(kind, "It doesn't perform. You notice it when you actually use it.")
+        body = [hook_line, mid, f"{product} is for the version of you that already left the house."]
+        if brief.needs_cta and brief.cta:
+            body.append(brief.cta)
     # Strip generic AI openings
     cleaned = []
     for line in body:
@@ -293,12 +513,12 @@ def _finalize_script(brief: CreativeBrief, texts: List[str], target: float, spee
     for i, text in enumerate(texts):
         est = estimate_speech_seconds(text, brief.language)
         lines.append(ScriptLine(
-            speaker="talent" if brief.talking_head and i == 0 else "narrator",
+            speaker=_speaker_for(brief, text, i),
             text=text,
             start_seconds=round(cursor, 3),
             estimated_seconds=est,
             emotion="natural",
-            on_camera=brief.talking_head and i == 0,
+            on_camera=bool(brief.talking_head),
         ))
         cursor += est + 0.25
     full = " ".join(texts)
@@ -306,18 +526,27 @@ def _finalize_script(brief: CreativeBrief, texts: List[str], target: float, spee
     if speech > speech_budget and texts:
         texts = texts[: max(1, len(texts) - 1)]
         return _finalize_script(brief, texts, target, speech_budget)
-    if _looks_generic(full):
-        raise DurationExceeded("script matched generic AI opening and was rejected")
+    if _looks_generic(full) or is_garbled_caption(full, brief.language):
+        raise DurationExceeded("script matched generic or garbled copy and was rejected")
     assert_duration(min(speech, target), "script speech estimate")
     return ReelScript(
         language=brief.language,
         hook_line=texts[0] if texts else "",
         body_lines=lines,
-        cta_line=texts[-1] if texts else brief.cta,
+        cta_line=(texts[-1] if texts and brief.needs_cta else ""),
         full_text=full,
         estimated_speech_seconds=speech,
         target_duration=target,
     )
+
+
+def _speaker_for(brief: CreativeBrief, text: str, index: int) -> str:
+    t = (text or "").lower()
+    if "ইন্টারভিউয়ার" in text or t.startswith("interviewer"):
+        return "interviewer"
+    if "ছেলে:" in text or t.startswith("candidate"):
+        return "candidate"
+    return "talent" if brief.talking_head else "narrator"
 
 
 def build_character(brief: CreativeBrief, req: ReelRequest) -> CharacterSpec:
@@ -339,11 +568,13 @@ def build_character(brief: CreativeBrief, req: ReelRequest) -> CharacterSpec:
         hair = "short, slightly imperfect; not advertising-slick"
         voice = "low, casual Dhaka register" if brief.language.startswith("bengali") else "low, casual"
     else:
-        gender = "young professional"
-        name = "Riya" if bd else "Alex"
-        wardrobe = "real weekday clothes, no logo wall"
-        hair = "natural; visible texture"
-        voice = "conversational"
+        # Perfume / social default: a real Bangladeshi woman if culture is implied.
+        gender = "woman"
+        bd = bd or brief.language.startswith("bengali")
+        name = "Nusrat" if bd else "Maya"
+        wardrobe = "weekday cotton shirt, small gold stud, no costume styling"
+        hair = "dark, naturally textured, slightly lived-in"
+        voice = "warm, unhurried Bangladeshi conversational" if brief.language.startswith("bengali") else "warm, unhurried"
     age = "24-32" if young else "28-38"
     return CharacterSpec(
         name=name,
@@ -363,35 +594,13 @@ def build_character(brief: CreativeBrief, req: ReelRequest) -> CharacterSpec:
 
 
 def build_product(brief: CreativeBrief, req: ReelRequest) -> ProductSpec:
-    name = _infer_name(req)
-    kind = _product_kind(req)
+    spec = build_fictional_or_named_product(req, _product_kind(req), brief.needs_product)
     user_images = [a.uri or a.local_path for a in req.assets if a.kind in {"product_image", "logo"} and (a.uri or a.local_path)]
-    authoritative = bool(user_images)
-    shapes = {
-        "perfume": "vertical glass bottle, cap consistent with the reference, no invented logo type",
-        "skincare": "compact pump or jar, label exactly as supplied",
-        "food": "real plated food or packaged item as supplied",
-        "fashion": "garment as worn, fabric weight visible",
-    }
-    return ProductSpec(
-        name=name,
-        shape=shapes.get(kind, "use supplied reference; do not redesign"),
-        proportions="match reference exactly" if authoritative else "believable commercial proportions",
-        packaging="do not invent packaging, labels, or typography" if authoritative else "simple unbranded-safe packaging if unknown",
-        colors="colors locked to reference" if authoritative else "muted real-world materials",
-        materials="glass/metal/paper as in reference" if authoritative else "physical, scuffed-real materials",
-        labels="reproduce only visible supplied text; never hallucinate copy",
-        logo="do not invent a logo",
-        typography="only text present on supplied assets",
-        distinctive_details="keep cap, bottle shoulder, and label placement identical across shots",
-        correct_usage={
-            "perfume": "spray on wrist or neck, then a small beat — no mist-cloud glamour shot unless briefed",
-            "skincare": "dot and press, not theatrical smearing",
-        }.get(kind, "handle like a real owner"),
-        orientation="label-readable when the product is the subject",
-        reference_uris=user_images,
-        user_image_authoritative=authoritative,
-    )
+    if user_images:
+        spec.reference_uris = user_images
+        spec.user_image_authoritative = True
+        spec.fictional = False
+    return spec
 
 
 def build_brand(brief: CreativeBrief, req: ReelRequest) -> BrandBible:
@@ -410,54 +619,75 @@ def build_brand(brief: CreativeBrief, req: ReelRequest) -> BrandBible:
     )
 
 
-def _shot_purposes(n: int, mode: str) -> List[str]:
-    if n == 1:
-        return ["hook_and_product"]
+def _shot_purposes(n: int, brief: CreativeBrief) -> List[str]:
+    beats = list(brief.strategy_beats) or ["hook", "moment", "close"]
+    if n <= 1:
+        return [beats[0] if beats else "hook"]
+    if n >= len(beats):
+        return beats[:n] if len(beats) >= n else beats + ["close"] * (n - len(beats))
+    # Compress: first, middle..., last
     if n == 2:
-        return ["hook", "product_and_cta"]
-    if n == 3:
-        return ["hook", "lived_moment", "product_cta"]
-    return ["hook", "lived_moment", "product_truth", "cta"][:n]
+        return [beats[0], beats[-1]]
+    return [beats[0], *beats[1:-1][: n - 2], beats[-1]]
 
 
 def build_storyboard(job: ReelJob) -> Storyboard:
-    assert job.brief and job.script and job.product_bible
+    assert job.brief and job.script
     brief = job.brief
     script = job.script
-    product = job.product_bible
-    char = job.character_bible[0] if job.character_bible else build_character(brief, job.request)
+    product = job.product_bible or ProductSpec(name="", shape="none")
+    chars = job.character_bible or [build_character(brief, job.request)]
+    char = chars[0]
     target = min(float(brief.duration_seconds), 30.0)
-    durations = plan_shot_durations(target, preferred_shots=3 if target >= 15 else 2)
+    preferred = 3 if target >= 15 else 2
+    if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
+        preferred = 2 if target <= 20 else 3
+    if brief.creative_type in {"COMEDY", "SKIT"} and target <= 15:
+        preferred = 2
+    durations = plan_shot_durations(target, preferred_shots=preferred)
     durations = [float(d) for d in restructure_timeline(durations, cap=target)]
+    if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT", "COMEDY", "SKIT"}:
+        durations = durations[:preferred]
     spans = assign_timeline(durations)
-    purposes = _shot_purposes(len(spans), brief.content_mode)
+    purposes = _shot_purposes(len(spans), brief)
     lines = script.body_lines
     location = {
-        ContentMode.STREET_STYLE.value: "Dhaka-adjacent street / tea stall light, late afternoon",
-        ContentMode.UGC.value: "real apartment, phone-height, window light",
-        ContentMode.PRODUCT_DEMO.value: "kitchen or vanity table, practical lamp",
-    }.get(brief.content_mode, "lived-in apartment, late-day window light, Dhaka-neutral interior")
+        "COMEDY": "small Dhaka office, fluorescent, cheap desk, phone-height",
+        "SKIT": "small Dhaka office, fluorescent, cheap desk, phone-height",
+        "EDUCATIONAL": "plain room, one practical lamp, nothing decorative",
+        "EXPLAINER": "plain room, one practical lamp, nothing decorative",
+        "FACT": "plain room, one practical lamp, nothing decorative",
+        "STORY": "lived-in apartment doorway, late light",
+        "LIFESTYLE": "Dhaka-adjacent street / tea stall light, late afternoon",
+        "UGC": "real apartment, phone-height, window light",
+        "PRODUCT_DEMO": "kitchen or vanity table, practical lamp",
+    }.get(brief.creative_type, "lived-in apartment, late-day window light")
     shots: List[ReelShot] = []
     for i, ((dur, start, end), purpose) in enumerate(zip(spans, purposes)):
         line = lines[min(i, len(lines) - 1)].text if lines else ""
-        talking = brief.talking_head and purpose in {"hook", "hook_and_product"}
-        gaze = "into lens, casual" if talking else "off-lens, toward product or window"
+        talking = bool(brief.talking_head) and purpose not in {"explanation", "compose", "graphic"}
+        gaze = "just past the lens, as if talking to one friend" if talking else "on the other person or the object"
+        who = [c.character_id for c in chars]
+        if purpose in {"punchline", "escalation", "setup"} and len(chars) > 1:
+            who = [c.character_id for c in chars]
+        compose = purpose in {"explanation", "close"} and brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"} and i == len(spans) - 1
         shots.append(ReelShot(
             shot_id=f"R{i+1:02d}",
             duration=dur,
             start_time=round(start, 3),
             end_time=round(end, 3),
             purpose=purpose,
-            characters=[char.character_id],
+            characters=who,
             character_state=char.emotional_baseline,
             location=location,
             environment=f"{location}. Real clutter at edges. No studio sweep.",
             wardrobe=char.wardrobe,
-            product_state=product.correct_usage if "product" in purpose else "present but not forced",
-            action=_action_for(purpose, product, char),
-            dialogue=line if (talking or purpose != "lived_moment") else "",
-            camera="phone-height medium" if talking else ("tight insert" if "product" in purpose else "medium close-up"),
-            framing="9:16, eyes/product in central safe area, headroom for captions at bottom",
+            product_state=product.correct_usage if (brief.needs_product and "product" in purpose) else "",
+            action=_action_for(purpose, product, char, brief.creative_type, chars),
+            dialogue=line,
+            camera="phone-height close-up on face" if str(purpose).startswith("hook") else "medium two-shot" if len(chars) > 1 else "medium close-up",
+            framing="9:16, FIRST FRAME has a face, a conflict, or a specific object. Never an empty table.",
+            generation_strategy="compose" if compose else "veo",
             lens_look="28-35mm equivalent, natural contrast, no anamorphic flare",
             camera_motion="locked or 10cm motivated drift — never random orbit",
             lighting="available window + practical lamp, no beauty dish",
@@ -487,26 +717,59 @@ def build_storyboard(job: ReelJob) -> Storyboard:
                 delivery_intensity="restrained",
             ),
             talking_head=talking,
-            native_audio=talking,
+            native_audio=talking and not compose,
             use_first_last_frame=(i > 0),
         ))
     total = sum(s.duration for s in shots)
     assert_duration(total, "storyboard")
-    if total > target + 1e-9 and total <= 30.0:
-        # Prefer under target when possible; still legal if <= 30
-        pass
-    return Storyboard(shots=shots, total_duration=round(total, 3), target_duration=target)
+    board = Storyboard(shots=shots, total_duration=round(total, 3), target_duration=target)
+    job.storyboard = board
+    from vidgen.reels.prompts import compile_shot_prompt
+    prev = None
+    for shot in shots:
+        compile_shot_prompt(shot, job, prev)
+        prev = shot
+    return board
 
 
-def _action_for(purpose: str, product: ProductSpec, char: CharacterSpec) -> str:
+def _pronouns(char: CharacterSpec) -> tuple[str, str]:
+    he = "man" in (char.appearance or "").lower()
+    return ("He", "his") if he else ("She", "her")
+
+
+def _action_for(purpose: str, product: ProductSpec, char: CharacterSpec, ctype: str = "", cast: Optional[List[CharacterSpec]] = None) -> str:
+    she, her = _pronouns(char)
+    other = (cast[1].name if cast and len(cast) > 1 else "the other person")
+    if ctype in {"COMEDY", "SKIT"}:
+        if purpose in {"hook", "setup"}:
+            return (
+                f"FIRST FRAME is {char.name}'s face, already sitting across a cheap desk. "
+                f"{she} is mid-answer, too confident. {other} watches, tired."
+            )
+        if purpose in {"escalation"}:
+            return f"{char.name} answers the wrong question; {other} blinks once, does not smile."
+        if purpose in {"punchline"}:
+            return f"{char.name} asks to hear the question again. {other} stares. Hold."
+        return f"{char.name} and {other} stay in the same office, same clothes, same desk."
+    if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
+        if str(purpose).startswith("hook") or purpose == "question":
+            return f"FIRST FRAME is {char.name}'s face saying the claim, or a single clear object. No landscape."
+        return f"{char.name} explains with one simple hand gesture. No stock cosmos footage."
+    if ctype == "STORY":
+        return f"FIRST FRAME is {char.name} already in the moment. {she} does not walk into an empty room."
+    if not product.required:
+        return f"FIRST FRAME is {char.name}'s face or a specific action. No establishing emptiness."
+    atomizer = "atomizer" if "atomizer" in (product.shape or "").lower() or "perfume" in (product.name or "").lower() else "product"
     if purpose in {"hook", "hook_and_product"}:
-        return f"{char.name} enters frame mid-action, notices {product.name}, does not pose."
-    if purpose == "lived_moment":
-        return f"{char.name} uses {product.name} the ordinary way: {product.correct_usage}"
-    if purpose in {"product_truth", "product_and_cta", "product_cta"}:
-        return f"Hands set {product.name} down; label orientation matches the bible. Small hold."
+        return (
+            f"FIRST FRAME is {char.name}'s face, already in close-up. "
+            f"{she} is mid-thought, then lifts {her} {product.name} {atomizer}. "
+            f"{she} does not turn away from us. No walk-in from behind."
+        )
+    if purpose in {"product", "proof", "product_truth", "product_and_cta", "product_cta"}:
+        return f"{char.name}'s hands hold the same {product.name}; label toward camera."
     if purpose == "cta":
-        return f"{char.name} walks out of frame; {product.name} remains, still, correctly oriented."
+        return f"{char.name} glances down, then back; {product.name} stays in frame."
     return f"{char.name} handles {product.name} naturally."
 
 
@@ -524,8 +787,15 @@ def plan_production(job: ReelJob) -> ReelJob:
     job.brief = build_brief(req)
     job.hook = build_hooks(job.brief, req)
     job.script = build_script(job.brief, req, job.hook)
-    job.character_bible = [build_character(job.brief, req)]
+    job.character_bible = build_cast(req, job.brief.language, job.brief.creative_type)
     job.product_bible = build_product(job.brief, req)
     job.brand_bible = build_brand(job.brief, req)
     job.storyboard = build_storyboard(job)
+    from vidgen.reels.assets import apply_compose_strategy, plan_assets
+    apply_compose_strategy(job)
+    plan_assets(job)
+    from vidgen.reels.craft import assert_watchable
+    from vidgen.reels.watchability import score_watchability
+    score_watchability(job)
+    assert_watchable(job)
     return job

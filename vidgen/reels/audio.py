@@ -8,13 +8,17 @@ from typing import List, Tuple
 
 from vidgen.config import settings
 from vidgen.reels.constants import MAX_DURATION_SECONDS
-from vidgen.reels.duration import estimate_speech_seconds, normalize_language
+from vidgen.reels.duration import estimate_speech_seconds
+from vidgen.reels.language import infer_language, is_garbled_caption
 from vidgen.reels.schemas import AudioCue, AudioPlan, EditPlan, ReelJob, ScriptLine
 
 
 def select_voice(job: ReelJob) -> Tuple[str, str, float, float]:
     """Returns (voice_name, language_code, rate, pitch)."""
-    lang = normalize_language(job.request.language if job.request else "english")
+    lang = infer_language(
+        (job.brief.language if job.brief else "") or (job.request.language if job.request else ""),
+        job.request.idea if job.request else "",
+    )
     gender = (job.request.voice_gender or "").lower()
     if lang.startswith("bengali"):
         if gender in {"male", "man"}:
@@ -55,7 +59,8 @@ def build_audio_plan(job: ReelJob) -> AudioPlan:
                 start_seconds=shot.start_time + min(1.2, shot.duration * 0.35),
                 duration_seconds=0.35,
             ))
-    mood = {
+    ctype = job.brief.creative_type if job.brief else ""
+    mood = "none" if job.brief.talking_head or ctype in {"COMEDY", "SKIT", "MEME"} else {
         "EMOTIONAL": "warm sparse piano",
         "COMEDY": "light plucked rhythm",
         "DIRECT_RESPONSE_AD": "tight muted pulse",
@@ -121,11 +126,13 @@ def ensure_mixable_audio(job: ReelJob, root: Path) -> None:
         total = float(job.storyboard.total_duration)
     elif job.request:
         total = float(job.request.duration_seconds)
-    music = (job.audio_plan.music_path if job.audio_plan and job.audio_plan.music_path
-             else str(root / "music.m4a"))
-    if not is_playable_audio(music):
-        print(f"[AUDIO] regenerating invalid score {music}")
-        render_music(job, root, total)
+    mood = (job.audio_plan.music_mood if job.audio_plan else "") or ""
+    if mood.strip().lower() not in {"", "none", "silent", "mute"}:
+        music = (job.audio_plan.music_path if job.audio_plan and job.audio_plan.music_path
+                 else str(root / "music.m4a"))
+        if not is_playable_audio(music):
+            print(f"[AUDIO] regenerating invalid score {music}")
+            render_music(job, root, total)
     if job.audio_plan:
         for cue in job.audio_plan.foley:
             if cue.local_path and not is_playable_audio(cue.local_path):
@@ -142,8 +149,12 @@ def ensure_mixable_audio(job: ReelJob, root: Path) -> None:
 
 
 def render_music(job: ReelJob, root: Path, duration: float) -> str:
+    mood = (job.audio_plan.music_mood if job.audio_plan else "") or ""
+    if mood.strip().lower() in {"", "none", "silent", "mute"}:
+        if job.audio_plan:
+            job.audio_plan.music_path = ""
+        return ""
     path = root / "music.m4a"
-    mood = (job.audio_plan.music_mood if job.audio_plan else "") or "quiet analog pad"
     freqs = _mood_freqs(mood)
     _write_score(str(path), min(duration, MAX_DURATION_SECONDS), freqs)
     if job.audio_plan:
@@ -162,33 +173,36 @@ def render_foley(job: ReelJob, root: Path) -> List[AudioCue]:
 
 
 def captions_from_audio_plan(job: ReelJob) -> str:
-    """Captions come from the actual scripted/audio lines — never invented."""
-    lines: List[ScriptLine] = list(job.script.body_lines) if job.script else []
-    if job.audio_plan:
-        # Prefer synthesized cue text + timing
-        idx = 1
-        blocks = []
-        for cue in job.audio_plan.dialogue_cues:
-            if not cue.text.strip():
+    """Captions come from the spoken script, including on-camera native lines."""
+    lang = (job.script.language if job.script else "") or (job.brief.language if job.brief else "")
+    spoken: List[tuple] = []
+    if job.script:
+        for line in job.script.body_lines:
+            text = (line.text or "").strip()
+            if not text or is_garbled_caption(text, lang):
                 continue
-            start = cue.start_seconds
-            end = start + max(0.6, cue.duration_seconds)
-            blocks += [str(idx), f"{_srt(start)} --> {_srt(end)}", cue.text.strip(), ""]
-            idx += 1
-        if blocks:
-            return "\n".join(blocks)
+            spoken.append((line.start_seconds, max(0.6, line.estimated_seconds), text))
+    if not spoken and job.audio_plan:
+        for cue in job.audio_plan.dialogue_cues:
+            text = (cue.text or "").strip()
+            if not text or is_garbled_caption(text, lang):
+                continue
+            spoken.append((cue.start_seconds, max(0.6, cue.duration_seconds), text))
     idx, blocks = 1, []
-    for line in lines:
-        start = line.start_seconds
-        end = start + max(0.6, line.estimated_seconds)
-        blocks += [str(idx), f"{_srt(start)} --> {_srt(end)}", line.text.strip(), ""]
+    for start, dur, text in spoken:
+        blocks += [str(idx), f"{_srt(start)} --> {_srt(start + dur)}", text, ""]
         idx += 1
     return "\n".join(blocks)
 
 
 def write_captions(job: ReelJob, root: Path) -> str:
+    text = captions_from_audio_plan(job)
+    if not text.strip():
+        if job.audio_plan:
+            job.audio_plan.subtitle_path = ""
+        return ""
     path = root / "captions.srt"
-    path.write_text(captions_from_audio_plan(job), encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     if job.audio_plan:
         job.audio_plan.subtitle_path = str(path)
     return str(path)
@@ -280,7 +294,7 @@ def _write_score(path: str, duration: float, freqs: Tuple[float, float, float]) 
         raise RuntimeError("ffmpeg is required to render music; install ffmpeg then resume the same job")
     fade = max(0.0, dur - 1.2)
     filt = (
-        f"[0:a]volume=0.04[a];[1:a]volume=0.03[b];[2:a]volume=0.02[c];"
+        f"[0:a]volume=0.018[a];[1:a]volume=0.012[b];[2:a]volume=0.008[c];"
         f"[a][b][c]amix=inputs=3,afade=t=in:st=0:d=0.8,afade=t=out:st={fade}:d=1.2"
     )
     cmd = [

@@ -134,6 +134,9 @@ def classify_failure(exc: Exception) -> FailureClass:
     msg = str(exc).lower()
     if "ffmpeg" in msg or "ffprobe" in msg:
         return FailureClass.APPLICATION
+    from vidgen.reels.craft import CraftRejected
+    if isinstance(exc, CraftRejected):
+        return FailureClass.APPLICATION
     if "duration" in msg or "max_duration" in msg:
         return FailureClass.DURATION
     if kind == "deterministic":

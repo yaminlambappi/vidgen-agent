@@ -8,6 +8,7 @@ import sys
 
 from vidgen.config import settings
 from vidgen.reels.edit import FFmpegMissing, require_ffmpeg
+from vidgen.reels.constants import BLOCKED_JOB_IDS
 from vidgen.reels.factory import ReelFactory
 from vidgen.reels.safety import load_checkpoint
 from vidgen.reels.schemas import InputAsset, ReelRequest
@@ -19,6 +20,7 @@ def _payload(job) -> dict:
         "status": job.status.value,
         "message": job.message,
         "dry_run_manifest": job.dry_run_manifest.model_dump() if job.dry_run_manifest else None,
+        "production_manifest": job.production_manifest.model_dump() if getattr(job, "production_manifest", None) else None,
         "generation_count": job.ledger.total_calls,
         "veo_calls": job.ledger.veo_calls,
         "final_video_path": job.final_video_path,
@@ -34,7 +36,7 @@ def _payload(job) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="VidGen Reels Super Factory")
     parser.add_argument("--idea", default="")
-    parser.add_argument("--language", default="english")
+    parser.add_argument("--language", default="", help="Leave empty to infer from --idea (Bengali beats a leftover english default)")
     parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--audience", default="")
     parser.add_argument("--style", default="")
@@ -59,6 +61,9 @@ def main() -> int:
             return 2
 
     if args.resume_id:
+        if args.resume_id in BLOCKED_JOB_IDS or str(args.resume_id).startswith("9237d967"):
+            print(f"Job {args.resume_id} is blocked. Start a new job. Do not spend more Veo credits on it.", file=sys.stderr)
+            return 2
         job = load_checkpoint(args.resume_id, factory.storage)
         if not job:
             print(f"Checkpoint not found for job {args.resume_id}", file=sys.stderr)

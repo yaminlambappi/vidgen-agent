@@ -38,6 +38,11 @@ def normalize_language(language: str) -> str:
     return "english"
 
 
+def infer_language(language: str = "", idea: str = "") -> str:
+    from vidgen.reels.language import infer_language as _infer
+    return _infer(language, idea)
+
+
 def _word_count(text: str, language: str) -> int:
     text = (text or "").strip()
     if not text:

@@ -42,7 +42,7 @@ class FilmCreateRequest(BaseModel):
 
 class ReelCreateRequest(BaseModel):
     idea: str = Field(..., min_length=3)
-    language: str = Field("english")
+    language: str = Field("", description="Empty = infer from idea. Bengali in the idea wins over an english leftover.")
     duration_seconds: float = Field(20, gt=0, le=30)
     audience: str = ""
     style: str = ""

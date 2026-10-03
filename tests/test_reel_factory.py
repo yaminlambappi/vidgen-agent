@@ -224,7 +224,8 @@ class TestCheckpointResume(unittest.TestCase):
         job.audio_plan = job.audio_plan
         from vidgen.reels.audio import build_audio_plan, default_edit_plan
         job.audio_plan = build_audio_plan(job)
-        job.audio_plan.dialogue_cues[0].local_path = "/tmp/fake.mp3" if job.audio_plan.dialogue_cues else ""
+        if job.audio_plan.dialogue_cues:
+            job.audio_plan.dialogue_cues[0].local_path = "/tmp/fake.mp3"
         job.edit_plan = default_edit_plan(job)
         job.status = ReelStatus.FAILED
         job.message = "assembly exploded"
@@ -309,6 +310,55 @@ class TestApiReel(unittest.TestCase):
             "duration_seconds": 31,
         })
         self.assertIn(r.status_code, (400, 422))
+
+
+class TestReelCraft(unittest.TestCase):
+    def test_idea_bengali_beats_english_default(self):
+        from vidgen.reels.language import infer_language
+        self.assertEqual(
+            infer_language("english", "Create a realistic 12-second Bengali social-media ad for a perfume"),
+            "bengali",
+        )
+        self.assertEqual(infer_language("", "Make an English tea reel"), "english")
+
+    def test_garbled_captions_rejected(self):
+        from vidgen.reels.language import is_garbled_caption
+        self.assertTrue(is_garbled_caption("Youroscent. Neverer louded, alwaysatheree.", "english"))
+        self.assertTrue(is_garbled_caption("This scent stays close.", "bengali"))
+        self.assertFalse(is_garbled_caption("এই গন্ধটা কাছে এলেই বোঝা যায়।", "bengali"))
+
+    def test_perfume_social_is_ugc_talking_head(self):
+        from vidgen.reels.creative import choose_content_mode
+        req = _req(
+            idea="Create a realistic 12-second Bengali social-media advertisement for a premium perfume.",
+            language="",
+            product_name="",
+        )
+        self.assertIn(choose_content_mode(req), {"UGC", "DIRECT_RESPONSE_AD", "PROMOTIONAL"})
+        job = ReelJob(request=req)
+        plan_production(job)
+        self.assertEqual(job.brief.language, "bengali")
+        self.assertTrue(job.brief.talking_head)
+        self.assertTrue(job.product_bible.name)
+        self.assertNotEqual(job.product_bible.name.lower(), "realistic")
+        self.assertIn("atomizer", job.product_bible.shape.lower())
+        self.assertIn("never a wine bottle", job.product_bible.shape.lower())
+        first = job.storyboard.shots[0]
+        self.assertTrue(first.talking_head)
+        self.assertTrue(first.native_audio)
+        self.assertIn("face", first.action.lower())
+        self.assertTrue(any(l.on_camera for l in job.script.body_lines))
+        self.assertTrue(any("\u0980" <= ch <= "\u09FF" for ch in job.script.full_text))
+        prompt = first.generation_prompt.lower()
+        self.assertIn("atomizer", prompt)
+        self.assertIn("face", prompt)
+        self.assertTrue("wine bottle" in prompt and ("never" in prompt or "forbidden" in prompt))
+
+    def test_watchable_plan_has_hook(self):
+        from vidgen.reels.craft import critique_plan
+        job = ReelJob(request=_req())
+        plan_production(job)
+        self.assertEqual(critique_plan(job), [])
 
 
 if __name__ == "__main__":

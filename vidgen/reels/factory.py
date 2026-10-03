@@ -17,11 +17,13 @@ from vidgen.reels.audio import (
     synthesize_dialogue,
     write_captions,
 )
-from vidgen.reels.constants import MAX_DURATION_SECONDS
-from vidgen.reels.creative import plan_production
+from vidgen.reels.assets import apply_compose_strategy, plan_assets, resolve_assets
+from vidgen.reels.constants import BLOCKED_JOB_IDS, MAX_DURATION_SECONDS
+from vidgen.reels.creative import build_storyboard, plan_production
+from vidgen.reels.watchability import score_watchability
 from vidgen.reels.llm import maybe_polish_script
 from vidgen.reels.duration import assert_duration, is_duration_valid
-from vidgen.reels.edit import assemble_reel, require_ffmpeg, write_vertical_plate
+from vidgen.reels.edit import assemble_reel, require_ffmpeg, write_compose_card, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
 from vidgen.reels.qc import run_qc
 from vidgen.reels.safety import (
@@ -43,6 +45,7 @@ from vidgen.reels.safety import (
 from vidgen.reels.schemas import (
     DryRunManifest,
     FailureClass,
+    ProductionManifest,
     ReelJob,
     ReelRequest,
     ReelStatus,
@@ -64,6 +67,10 @@ class ReelFactory:
         return job
 
     def run(self, job: ReelJob, dry_run: Optional[bool] = None) -> ReelJob:
+        if job.job_id in BLOCKED_JOB_IDS or str(job.job_id).startswith("9237d967"):
+            raise PermanentGenerationError(
+                f"Job {job.job_id} is a failed historical reel and must not be resumed. Start a new job."
+            )
         dry = settings.DRY_RUN if dry_run is None else bool(dry_run)
         if dry_run is None:
             dry = dry or bool(job.request.dry_run)
@@ -121,6 +128,8 @@ class ReelFactory:
             if not job.brief or not job.script:
                 plan_production(job)
             maybe_polish_script(job, store, dry)
+            if job.brief and job.script:
+                job.storyboard = build_storyboard(job)
             assert job.script
             assert_duration(job.script.estimated_speech_seconds or 0.1, "script")
             transition(job, ReelStatus.SCRIPT_READY, "Script fitted to duration", 22)
@@ -136,11 +145,15 @@ class ReelFactory:
 
         if job.status == ReelStatus.STORYBOARD_READY:
             self._attach_user_references(job)
+            plan_assets(job)
+            apply_compose_strategy(job)
+            resolve_assets(job, dry)
             transition(job, ReelStatus.REFERENCES_READY, "References resolved", 42)
             checkpoint(job, self.storage)
 
         if job.status == ReelStatus.REFERENCES_READY:
             job.dry_run_manifest = self._manifest(job, dry)
+            job.production_manifest = self._production_manifest(job)
             if dry:
                 transition(job, ReelStatus.COMPLETE, "Dry-run complete — no expensive generation", 100)
                 log_event(job, event="dry_run_complete", **job.dry_run_manifest.model_dump())
@@ -246,22 +259,18 @@ class ReelFactory:
 
     def _manifest(self, job: ReelJob, dry: bool) -> DryRunManifest:
         shots = job.storyboard.shots if job.storyboard else []
-        user_footage = sum(1 for s in shots if s.use_user_footage)
-        veo = max(0, len(shots) - user_footage)
+        veo = sum(1 for s in shots if s.generation_strategy == "veo" and not s.use_user_footage)
         images = 0
-        if job.character_bible and not job.character_bible[0].reference_uri:
-            images += 1
-        if job.product_bible and not job.product_bible.reference_uris:
-            images += 1
+        if job.asset_plan:
+            images = sum(1 for n in job.asset_plan.needs if n.strategy == "generate_image")
         tts = 0
         if job.script:
             tts = sum(1 for l in job.script.body_lines if l.text and not l.on_camera)
         total = veo + images + tts
         limit = settings.MAX_TOTAL_GENERATION_BUDGET * max(1, job.request.variant_count)
         status = "within_limit" if total <= limit else "over_budget"
-        if status == "over_budget" and dry:
-            # Dry-run still reports; execution would trip the guard
-            pass
+        needs = job.asset_plan.needs if job.asset_plan else []
+        score = job.watchability or score_watchability(job)
         return DryRunManifest(
             target_duration=float(job.request.duration_seconds),
             max_duration=MAX_DURATION_SECONDS,
@@ -276,6 +285,36 @@ class ReelFactory:
             language=job.brief.language if job.brief else "",
             talking_head=bool(job.brief.talking_head) if job.brief else False,
             expensive_calls_made=job.ledger.total_calls,
+            creative_type=job.brief.creative_type if job.brief else "",
+            creative_strategy=list(job.brief.strategy_beats) if job.brief else [],
+            characters=[c.name for c in job.character_bible],
+            assets_required=[f"{n.kind}:{n.name}" for n in needs],
+            assets_to_generate=[n.name for n in needs if n.strategy in {"generate_image", "generate_in_prompt"}],
+            assets_to_source=[n.name for n in needs if n.strategy == "source"],
+            script=(job.script.full_text if job.script else "")[:500],
+            storyboard=[f"{s.shot_id}:{s.purpose}:{s.generation_strategy}" for s in shots],
+            voice_plan=(job.character_bible[0].speaking_style if job.character_bible else ""),
+            audio_plan="dialogue first; music only if the category needs it",
+            caption_plan="from final script, lower-third, language-locked",
+            qc_gates=["creative", "language", "asset", "continuity", "timing", "cost", "watchability"],
+            watchability=score.model_dump(),
+        )
+
+    def _production_manifest(self, job: ReelJob) -> ProductionManifest:
+        shots = job.storyboard.shots if job.storyboard else []
+        return ProductionManifest(
+            creative_type=job.brief.creative_type if job.brief else "",
+            language=job.brief.language if job.brief else "",
+            duration=float(job.request.duration_seconds),
+            strategy_beats=list(job.brief.strategy_beats) if job.brief else [],
+            characters=[{"name": c.name, "role": c.role, "wardrobe": c.wardrobe} for c in job.character_bible],
+            assets=[n.model_dump() for n in (job.asset_plan.needs if job.asset_plan else [])],
+            shots=[{"id": s.shot_id, "purpose": s.purpose, "strategy": s.generation_strategy, "seconds": s.duration} for s in shots],
+            script=job.script.full_text if job.script else "",
+            audio={"talking_head": bool(job.brief.talking_head) if job.brief else False},
+            captions={"language": job.brief.language if job.brief else "", "placement": "lower_third"},
+            budget={"estimated_veo": job.dry_run_manifest.estimated_veo_calls if job.dry_run_manifest else 0},
+            gates=["creative", "language", "asset", "continuity", "timing", "cost"],
         )
 
     def _generate_shots(self, job: ReelJob, root: Path, store: IdempotencyStore, dry: bool) -> None:
@@ -287,6 +326,15 @@ class ReelFactory:
                 if shot.use_user_footage and not shot.generated_asset_uri:
                     shot.generated_asset_uri = shot.user_footage_uri
                 prev = shot
+                continue
+            local = root / f"{shot.shot_id}.mp4"
+            if shot.generation_strategy == "compose":
+                title = (shot.dialogue or (job.script.cta_line if job.script else "") or "—")[:80]
+                write_compose_card(str(local), shot.duration, title, job.brief.language if job.brief else "")
+                shot.generated_asset_uri = str(local)
+                shot.local_path = str(local)
+                prev = shot
+                checkpoint(job, self.storage)
                 continue
             pkg = compile_shot_prompt(shot, job, prev)
             shot.prompt_hash = hashlib.sha256(pkg["prompt"].encode()).hexdigest()
@@ -382,9 +430,12 @@ class ReelFactory:
             voice = [{"path": c.local_path, "start_seconds": c.start_seconds, "kind": "dialogue"} for c in job.audio_plan.dialogue_cues]
             foley = [{"path": c.local_path, "start_seconds": c.start_seconds, "kind": c.kind} for c in job.audio_plan.foley]
         final = str(root / "final_reel.mp4")
+        music = job.audio_plan.music_path if job.audio_plan else None
+        if job.brief and job.brief.talking_head:
+            music = None
         assemble_reel(
             job, paths, final,
-            music_path=job.audio_plan.music_path if job.audio_plan else None,
+            music_path=music,
             subtitle_path=job.audio_plan.subtitle_path if job.audio_plan else None,
             voice_tracks=voice,
             foley_tracks=foley,

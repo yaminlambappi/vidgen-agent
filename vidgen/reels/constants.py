@@ -47,7 +47,50 @@ CONTENT_MODES = (
     "PROBLEM_SOLUTION",
     "BEFORE_AFTER",
     "PRODUCT_REVEAL",
+    "EDUCATIONAL",
+    "EXPLAINER",
+    "FACT",
+    "TUTORIAL",
+    "REVIEW",
+    "REACTION",
+    "MEME",
+    "MOTIVATIONAL",
+    "NEWS_STYLE",
+    "PROMOTIONAL",
+    "SKIT",
 )
+
+CREATIVE_TYPES = (
+    "ADVERTISEMENT",
+    "UGC",
+    "COMEDY",
+    "SKIT",
+    "STORY",
+    "EDUCATIONAL",
+    "EXPLAINER",
+    "FACT",
+    "TUTORIAL",
+    "REVIEW",
+    "REACTION",
+    "MEME",
+    "LIFESTYLE",
+    "MOTIVATIONAL",
+    "CINEMATIC",
+    "NEWS_STYLE",
+    "PRODUCT_DEMO",
+    "TESTIMONIAL",
+    "PROMOTIONAL",
+    "OTHER",
+)
+
+# Historical jobs that must never be resumed or spend more Veo credits.
+BLOCKED_JOB_IDS = frozenset({
+    "9237d967-2507-4a55-b98d-d8609db37e0d",
+})
+
+AD_LIKE_TYPES = frozenset({
+    "ADVERTISEMENT", "UGC", "PRODUCT_DEMO", "TESTIMONIAL", "PROMOTIONAL", "REVIEW",
+})
 
 HOOK_APPROACHES = (
     "curiosity",

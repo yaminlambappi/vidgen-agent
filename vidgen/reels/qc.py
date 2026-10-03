@@ -14,6 +14,7 @@ from vidgen.reels.constants import (
     REEL_WIDTH,
 )
 from vidgen.reels.duration import is_duration_valid
+from vidgen.reels.language import has_bengali, is_garbled_caption
 from vidgen.reels.schemas import QCReport, ReelJob
 
 
@@ -97,16 +98,27 @@ def creative_qc(job: ReelJob) -> Dict[str, Any]:
         issues.append("missing storyboard")
     if job.storyboard and job.storyboard.total_duration > MAX_DURATION_SECONDS:
         issues.append("storyboard exceeds 30s")
-    if job.brief and job.brief.cta and job.script and job.brief.cta not in job.script.full_text:
-        # CTA may be paraphrased; require some CTA-like ending
-        if not job.script.cta_line:
-            issues.append("missing CTA")
-    product_visible = False
-    if job.storyboard:
-        product_visible = any("product" in s.purpose or (job.product_bible and job.product_bible.name.lower() in (s.action or "").lower())
-                              for s in job.storyboard.shots)
-    if not product_visible:
-        issues.append("product not clearly planned as visible")
+    if job.brief and job.brief.needs_cta and job.script and not job.script.cta_line:
+        issues.append("missing CTA")
+    if job.brief and job.brief.needs_product:
+        product_visible = False
+        if job.storyboard:
+            product_visible = any(
+                "product" in s.purpose or (job.product_bible and job.product_bible.name and job.product_bible.name.lower() in (s.action or "").lower())
+                for s in job.storyboard.shots
+            )
+        if not product_visible:
+            issues.append("product not clearly planned as visible")
+    lang = job.brief.language if job.brief else ""
+    if job.script and is_garbled_caption(job.script.full_text, lang):
+        issues.append("garbled or language-mismatched script")
+    if lang.startswith("bengali") and job.script and not has_bengali(job.script.full_text):
+        issues.append("Bengali reel has no Bengali speech")
+    if job.audio_plan and job.audio_plan.subtitle_path:
+        from pathlib import Path
+        p = Path(job.audio_plan.subtitle_path)
+        if p.exists() and is_garbled_caption(p.read_text(encoding="utf-8"), lang):
+            issues.append("garbled captions")
     return {"passed": not issues, "issues": issues, "hook": bool(job.hook and job.hook.chosen)}
 
 
@@ -120,9 +132,16 @@ def continuity_qc(job: ReelJob) -> Dict[str, Any]:
         issues.append("wardrobe changed across shots")
     if len(location) > 1:
         issues.append("location changed across shots")
-    chars = {tuple(s.characters) for s in job.storyboard.shots if s.characters}
-    if len(chars) > 1:
+    bible = {c.character_id for c in job.character_bible}
+    used = set()
+    for s in job.storyboard.shots:
+        used.update(s.characters)
+    if used - bible:
         issues.append("character set changed")
+    if job.product_bible and job.product_bible.required:
+        names = {(s.product_state or "") for s in job.storyboard.shots}
+        if job.product_bible.name and all(job.product_bible.name.lower() not in (s.action or "").lower() and "product" not in s.purpose for s in job.storyboard.shots):
+            issues.append("product identity missing from shots")
     return {"passed": not issues, "issues": issues}
 
 
@@ -159,11 +178,21 @@ def run_qc(job: ReelJob, final_path: str) -> QCReport:
         failures.extend(visual.get("issues") or [])
     if not audio.get("passed"):
         failures.extend(audio.get("issues") or [])
+    from vidgen.reels.watchability import score_watchability
+    watch = score_watchability(job).model_dump()
+    captions = {"passed": True, "issues": []}
+    if creative.get("issues"):
+        if any("garbled caption" in i for i in creative["issues"]):
+            captions = {"passed": False, "issues": [i for i in creative["issues"] if "caption" in i]}
+    if not watch.get("passed"):
+        failures.append(f"watchability {watch.get('total')}")
     return QCReport(
         passed=not failures,
         technical=tech,
         creative=creative,
         visual=visual,
         audio=audio,
+        captions=captions,
+        watchability=watch,
         failures=failures,
     )
