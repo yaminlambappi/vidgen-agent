@@ -12,6 +12,7 @@ from vidgen.reels.duration import (
     estimate_speech_seconds,
     plan_shot_durations,
     restructure_timeline,
+    snap_veo_duration,
 )
 from vidgen.reels.identity import build_cast, build_fictional_or_named_product
 from vidgen.reels.intent import (
@@ -316,14 +317,14 @@ def _category_hooks(brief: CreativeBrief, req: ReelRequest) -> dict:
     if ctype in {"COMEDY", "SKIT", "MEME"}:
         if lang.startswith("bengali"):
             return {
-                "curiosity": ("স্যার, আমি একদম ready।", "Face already answering, too confident."),
-                "relatable_situation": ("ইন্টারভিউতে ঢুকলাম। মনে মনে full marks।", "Phone-height across a cheap office desk."),
-                "direct_statement": ("প্রশ্ন শুনেও উত্তর দিয়ে ফেলি।", "Mouth already moving."),
+                "curiosity": ("স্যার, আমি একদম ready।", "Two faces already at a cheap desk."),
+                "relatable_situation": ("ইন্টারভিউতে ঢুকলাম। মনে মনে full marks।", "Locked two-shot across a cheap office desk."),
+                "direct_statement": ("প্রশ্ন শুনেও উত্তর দিয়ে ফেলি।", "Mouth already moving, interviewer staring."),
                 "question": ("এই প্রশ্নটা কি সিরিয়াস?", "Blink, then double down."),
             }
         return {
-            "curiosity": ("I am extremely prepared.", "Face already answering."),
-            "relatable_situation": ("Walked in like I had the job.", "Cheap office, phone height."),
+            "curiosity": ("I am extremely prepared.", "Two faces already at a cheap desk."),
+            "relatable_situation": ("Walked in like I had the job.", "Locked two-shot, cheap office desk."),
             "direct_statement": ("I answer before I hear the question.", "Mouth already moving."),
             "question": ("Was that a real question?", "Blink, then double down."),
         }
@@ -407,16 +408,15 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
     kind = _product_kind(req)
     ctype = brief.creative_type
     if ctype in {"COMEDY", "SKIT"}:
+        # The joke IS the Q&A. Do not prepend a hook monologue that polish can flatten into.
         if lang.startswith("bengali"):
             return [
-                hook_line or "স্যার, আমি একদম ready।",
                 "ইন্টারভিউয়ার: আপনার নাম কী?",
                 "ছেলে: জি… খুব ভালো।",
                 "ইন্টারভিউয়ার: না, নাম।",
                 "ছেলে: স্যার… প্রশ্নটা আবার?",
             ]
         return [
-            hook_line or "I am extremely prepared.",
             "Interviewer: What is your name?",
             "Candidate: Yes. Very good.",
             "Interviewer: Your name.",
@@ -494,6 +494,10 @@ def build_script(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) -> 
     target = min(float(brief.duration_seconds), 30.0)
     # Speech should occupy ~55-70% of runtime; leave room for picture
     speech_budget = max(4.0, min(target * 0.68, target - 2.0))
+    if brief.creative_type in {"COMEDY", "SKIT"}:
+        # Punchline is the last line. Never trim a two-person joke to fit a budget.
+        joke = estimate_speech_seconds(" ".join(raw), brief.language)
+        return _finalize_script(brief, raw, target, max(speech_budget, joke + 0.4))
     kept_text: List[str] = []
     cursor = 0.15
     for text in raw:
@@ -642,18 +646,21 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     preferred = 3 if target >= 15 else 2
     if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         preferred = 2 if target <= 20 else 3
-    if brief.creative_type in {"COMEDY", "SKIT"} and target <= 15:
-        preferred = 2
-    durations = plan_shot_durations(target, preferred_shots=preferred)
-    durations = [float(d) for d in restructure_timeline(durations, cap=target)]
-    if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT", "COMEDY", "SKIT"}:
+    if brief.creative_type in {"COMEDY", "SKIT"}:
+        # One Veo take = one room, two faces. A second generation is how the actor changed.
+        preferred = 1
+        durations = [float(8 if target >= 8 else snap_veo_duration(target))]
+    else:
+        durations = plan_shot_durations(target, preferred_shots=preferred)
+        durations = [float(d) for d in restructure_timeline(durations, cap=target)]
+    if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         durations = durations[:preferred]
     spans = assign_timeline(durations)
     purposes = _shot_purposes(len(spans), brief)
     lines = script.body_lines
     location = {
-        "COMEDY": "small Dhaka office, fluorescent, cheap desk, phone-height",
-        "SKIT": "small Dhaka office, fluorescent, cheap desk, phone-height",
+        "COMEDY": "small Dhaka office, cheap desk, fluorescent tubes, locked camera on a shelf opposite the desk",
+        "SKIT": "small Dhaka office, cheap desk, fluorescent tubes, locked camera on a shelf opposite the desk",
         "EDUCATIONAL": "plain room, one practical lamp, nothing decorative",
         "EXPLAINER": "plain room, one practical lamp, nothing decorative",
         "FACT": "plain room, one practical lamp, nothing decorative",
@@ -664,9 +671,15 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     }.get(brief.creative_type, "lived-in apartment, late-day window light")
     shots: List[ReelShot] = []
     for i, ((dur, start, end), purpose) in enumerate(zip(spans, purposes)):
-        line = lines[min(i, len(lines) - 1)].text if lines else ""
+        if brief.creative_type in {"COMEDY", "SKIT"} and len(spans) == 1:
+            line = " ".join(l.text for l in lines if l.text)
+        else:
+            line = lines[min(i, len(lines) - 1)].text if lines else ""
         talking = bool(brief.talking_head) and purpose not in {"explanation", "compose", "graphic"}
-        gaze = "just past the lens, as if talking to one friend" if talking else "on the other person or the object"
+        comedy = brief.creative_type in {"COMEDY", "SKIT"}
+        gaze = "at the other person across the desk" if comedy else (
+            "just past the lens, as if talking to one friend" if talking else "on the other person or the object"
+        )
         who = [c.character_id for c in chars]
         if purpose in {"punchline", "escalation", "setup"} and len(chars) > 1:
             who = [c.character_id for c in chars]
@@ -681,21 +694,35 @@ def build_storyboard(job: ReelJob) -> Storyboard:
             character_state=char.emotional_baseline,
             location=location,
             environment=f"{location}. Real clutter at edges. No studio sweep.",
-            wardrobe=char.wardrobe,
+            wardrobe=(
+                f"{chars[0].wardrobe} | {chars[1].wardrobe}"
+                if comedy and len(chars) > 1 else char.wardrobe
+            ),
             product_state=product.correct_usage if (brief.needs_product and "product" in purpose) else "",
             action=_action_for(purpose, product, char, brief.creative_type, chars),
             dialogue=line,
-            camera="phone-height close-up on face" if str(purpose).startswith("hook") else "medium two-shot" if len(chars) > 1 else "medium close-up",
-            framing="9:16, FIRST FRAME has a face, a conflict, or a specific object. Never an empty table.",
+            camera=(
+                "locked third-person medium TWO-SHOT, both faces visible, camera on a desk or shelf — NEVER a selfie, NEVER first-person, NEVER a phone in a hand"
+                if comedy else
+                ("phone-height close-up on face" if str(purpose).startswith("hook") else "medium close-up")
+            ),
+            framing=(
+                "9:16, both people in frame from the first frame. Desk between them. No empty room, no selfie arm."
+                if comedy else
+                "9:16, FIRST FRAME has a face, a conflict, or a specific object. Never an empty table."
+            ),
             generation_strategy="compose" if compose else "veo",
             lens_look="28-35mm equivalent, natural contrast, no anamorphic flare",
-            camera_motion="locked or 10cm motivated drift — never random orbit",
-            lighting="available window + practical lamp, no beauty dish",
+            camera_motion="locked — no orbit, no handheld selfie sway" if comedy else "locked or 10cm motivated drift — never random orbit",
+            lighting="overhead fluorescent, slightly ugly, no beauty dish" if comedy else "available window + practical lamp, no beauty dish",
             visual_style=brief.visual_style,
             sound=_sound_for(purpose, product.name),
             music="low bed, ducked",
             transition="hard_cut" if i else "none",
             continuity_requirements=[
+                "same wardrobe", "same hair", "same two people",
+                "same time of day", "same office desk",
+            ] if comedy else [
                 "same wardrobe", "same hair", "same product bottle",
                 "same time of day", "same location geography",
             ],
@@ -703,14 +730,14 @@ def build_storyboard(job: ReelJob) -> Storyboard:
                 "plastic skin", "malformed hands", "invented logo",
                 "changed clothes", "floating product", "fake lens flare",
                 "looking at camera" if not talking else "exaggerated presenter smile",
-            ],
+            ] + (["selfie", "first-person", "phone in a hand", "one person only", "empty office"] if comedy else []),
             performance=PerformanceDirection(
-                objective="own the product privately, not sell it",
+                objective="play the wrong-answer joke, not sell a product" if comedy else "own the product privately, not sell it",
                 emotional_state=char.emotional_baseline,
                 subtext="this is already part of their day",
                 body_language="unforced shoulders, real weight in the hands",
                 gaze=gaze,
-                gesture="small, motivated product handling",
+                gesture="hands on the desk, no phone, no product" if comedy else "small, motivated product handling",
                 facial_reaction="micro, not a commercial grin",
                 timing="let a breath exist before the line",
                 pause="0.3s after the hook line",
@@ -741,16 +768,11 @@ def _action_for(purpose: str, product: ProductSpec, char: CharacterSpec, ctype: 
     she, her = _pronouns(char)
     other = (cast[1].name if cast and len(cast) > 1 else "the other person")
     if ctype in {"COMEDY", "SKIT"}:
-        if purpose in {"hook", "setup"}:
-            return (
-                f"FIRST FRAME is {char.name}'s face, already sitting across a cheap desk. "
-                f"{she} is mid-answer, too confident. {other} watches, tired."
-            )
-        if purpose in {"escalation"}:
-            return f"{char.name} answers the wrong question; {other} blinks once, does not smile."
-        if purpose in {"punchline"}:
-            return f"{char.name} asks to hear the question again. {other} stares. Hold."
-        return f"{char.name} and {other} stay in the same office, same clothes, same desk."
+        return (
+            f"THIRD-PERSON two-shot. {char.name} (candidate, cheap tie) sits across a cheap desk from {other} (interviewer, no tie). "
+            f"FIRST FRAME shows both faces. {char.name} answers every question wrongly and too fast. "
+            f"{other} stares, tired, does not laugh. They do not look into a phone. No selfie arm. Same room the whole take."
+        )
     if ctype in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         if str(purpose).startswith("hook") or purpose == "question":
             return f"FIRST FRAME is {char.name}'s face saying the claim, or a single clear object. No landscape."

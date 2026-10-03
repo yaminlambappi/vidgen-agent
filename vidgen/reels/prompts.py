@@ -19,7 +19,17 @@ def compile_shot_prompt(
     talking = bool(shot.talking_head and spoken)
 
     who = ""
-    if char:
+    comedy = bool(brief and brief.creative_type in {"COMEDY", "SKIT"})
+    cast = list(job.character_bible or [])
+    if comedy and len(cast) >= 2:
+        a, b = cast[0], cast[1]
+        who = (
+            f"TWO people, same take: "
+            f"(1) {a.name}, {a.age}, {a.appearance}, hair {a.hair}, wearing {a.wardrobe}, role {a.role}. "
+            f"(2) {b.name}, {b.age}, {b.appearance}, hair {b.hair}, wearing {b.wardrobe}, role {b.role}. "
+            f"Do not swap their clothes. Do not change either face."
+        )
+    elif char:
         who = (
             f"{char.name}, {char.age}, {char.appearance}. "
             f"Hair: {char.hair}. Face: {char.face}. Skin: {char.skin}. "
@@ -30,7 +40,7 @@ def compile_shot_prompt(
         "atomizer" in (product.shape or "").lower() or "perfume" in (product.name or "").lower()
     )
     product_lock = ""
-    if product.required and product.name:
+    if product.required and product.name and brief and brief.needs_product:
         product_lock = f"{product.name}: {product.shape}. {product.distinctive_details or product.correct_usage}."
         if perfume:
             product_lock += (
@@ -44,7 +54,14 @@ def compile_shot_prompt(
     he = bool(char and "man" in (char.appearance or "").lower())
     they = "He" if he else "She"
     speak_note = ""
-    if talking:
+    if comedy and talking:
+        tongue = "conversational Bangladeshi Bangla" if str(lang).startswith("bengali") else "casual English"
+        speak_note = (
+            f"Two distinct voices speak {tongue} to each other, never into a phone. "
+            f'Play this exact exchange, no extra lines: "{spoken}". '
+            "Mouths must match. Generate native synced audio for both people."
+        )
+    elif talking:
         tongue = "conversational Bangladeshi Bangla" if str(lang).startswith("bengali") else "casual English"
         speak_note = (
             f"{they} speaks naturally in {tongue}. "
@@ -54,7 +71,12 @@ def compile_shot_prompt(
         speak_note = f"{they} does not talk. No visible speech, no extra voice."
 
     hook_rule = ""
-    if shot.purpose.startswith("hook"):
+    if comedy:
+        hook_rule = (
+            "SCROLL-STOP: first frame is a third-person two-shot of both men at a desk. "
+            "FORBIDDEN: selfie, first-person phone, one face only, empty room, walking in."
+        )
+    elif shot.purpose.startswith("hook"):
         hook_obj = "the atomizer in their hands" if perfume else "the product in their hands"
         hook_rule = (
             f"SCROLL-STOP: frame 1 must be their face or {hook_obj}. "
@@ -62,10 +84,14 @@ def compile_shot_prompt(
         )
 
     continuity = ""
-    if previous and char:
+    if previous and comedy and len(cast) >= 2:
         continuity = (
-            f"Same person as the previous shot: same face, hair, {char.wardrobe}, same apartment, same time of day. "
-            f"Same {product.name} bottle shape."
+            f"SAME two men as the previous shot, same faces, same clothes, same cheap fluorescent office, same desk. "
+            f"{cast[0].name} still in {cast[0].wardrobe}. {cast[1].name} still in {cast[1].wardrobe}."
+        )
+    elif previous and char:
+        continuity = (
+            f"Same person as the previous shot: same face, hair, {char.wardrobe}, same room, same time of day."
         )
 
     scene = " ".join(x for x in [
@@ -77,15 +103,17 @@ def compile_shot_prompt(
         product_lock,
         speak_note,
         f"Camera: {shot.camera}. {shot.framing}. {shot.lens_look}. Motion: {shot.camera_motion}.",
-        f"Light: {shot.lighting}. Handheld social, not a luxury catalogue.",
+        f"Light: {shot.lighting}. {'Locked third-person, not a selfie.' if comedy else 'Handheld social, not a luxury catalogue.'}",
         continuity,
         "No on-screen text, captions, logos, watermarks, or subtitles.",
         "Real skin texture, real hands, real weight. No plastic beauty filter.",
+        "NEVER selfie. NEVER first-person. NEVER a phone held toward the lens." if comedy else "",
     ] if x)
 
     negs = list(shot.negative_constraints) + [
         "wine bottle", "empty glass bottle", "back of head as first frame",
         "malformed hands", "changed actor", "on-screen text", "garbled letters",
+        "selfie", "first-person", "phone selfie arm",
     ]
     refs = []
     if product.reference_uris:

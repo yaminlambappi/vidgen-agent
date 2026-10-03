@@ -23,7 +23,7 @@ from vidgen.reels.creative import build_storyboard, plan_production
 from vidgen.reels.watchability import score_watchability
 from vidgen.reels.llm import maybe_polish_script
 from vidgen.reels.duration import assert_duration, assign_timeline, legalize_shot_durations
-from vidgen.reels.edit import assemble_reel, require_ffmpeg, write_compose_card, write_vertical_plate
+from vidgen.reels.edit import assemble_reel, require_ffmpeg, should_burn_subtitles, write_compose_card, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
 from vidgen.reels.qc import run_qc
 from vidgen.reels.safety import (
@@ -458,10 +458,13 @@ class ReelFactory:
         music = job.audio_plan.music_path if job.audio_plan else None
         if job.brief and job.brief.talking_head:
             music = None
+        subtitle = job.audio_plan.subtitle_path if job.audio_plan else None
+        if not should_burn_subtitles(job):
+            subtitle = None
         assemble_reel(
             job, paths, final,
             music_path=music,
-            subtitle_path=job.audio_plan.subtitle_path if job.audio_plan else None,
+            subtitle_path=subtitle,
             voice_tracks=voice,
             foley_tracks=foley,
         )

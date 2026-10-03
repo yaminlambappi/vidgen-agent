@@ -13,6 +13,9 @@ def maybe_polish_script(job: ReelJob, store: IdempotencyStore, dry: bool) -> Non
         return
     if not job.brief or not job.script:
         return
+    # Comedy/skit jokes die when flattened into a single "confident" line.
+    if job.brief.creative_type in {"COMEDY", "SKIT", "MEME"}:
+        return
     try:
         execute_expensive(
             job,

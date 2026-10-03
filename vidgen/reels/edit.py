@@ -181,7 +181,7 @@ def assemble_reel(
     _mix(
         concat_path, mixed,
         music_path=music_path,
-        subtitle_path=subtitle_path,
+        subtitle_path=subtitle_path if should_burn_subtitles(job) else None,
         voice_tracks=voice_tracks or [],
         foley_tracks=foley_tracks or [],
         duration=total,
@@ -223,7 +223,7 @@ def _mix(
 ) -> None:
     ff = _ffmpeg()
     vf = "eq=contrast=1.03:saturation=0.97,format=yuv420p"
-    if subtitle_path and Path(subtitle_path).exists() and settings_burn():
+    if subtitle_path and Path(subtitle_path).exists() and settings_burn(language=language):
         escaped = subtitle_path.replace("\\", r"\\").replace("'", r"\'")
         font = "Noto Sans Bengali" if str(language).startswith("bengali") else "Noto Sans"
         # Lower third only — never cover the face that is the hook
@@ -283,6 +283,36 @@ def _mix(
     _run(cmd)
 
 
-def settings_burn() -> bool:
+def _has_bengali_font() -> bool:
+    from shutil import which
+    import subprocess
+    if not which("fc-list"):
+        return False
+    try:
+        out = subprocess.check_output(
+            ["fc-list", ":lang=bn"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except Exception:
+        return False
+    return bool(out.strip())
+
+
+def should_burn_subtitles(job: Optional[ReelJob] = None, language: str = "") -> bool:
+    """Burned captions on talking-head/comedy cover the joke. Bengali tofu is worse."""
     from vidgen.config import settings
-    return bool(settings.BURN_SUBTITLES)
+    brief = job.brief if job is not None else None
+    if brief and (brief.talking_head or brief.creative_type in {"COMEDY", "SKIT", "MEME"}):
+        return False
+    if not bool(settings.BURN_SUBTITLES):
+        return False
+    lang = language or (brief.language if brief else "")
+    if str(lang).startswith("bengali") and not _has_bengali_font():
+        return False
+    return True
+
+
+def settings_burn(language: str = "") -> bool:
+    return should_burn_subtitles(language=language)

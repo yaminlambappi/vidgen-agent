@@ -75,22 +75,19 @@ def build_cast(req: ReelRequest, language: str, creative_type: str) -> List[Char
     bd = _bd(req, language)
     n = min(2, _count_from_idea(req.idea))
     gender = _gender_from_idea(req.idea)
-    if creative_type in {"COMEDY", "SKIT"} and "interview" in (req.idea or "").lower():
-        n = 2
-        gender = gender or "man"
     specs: List[CharacterSpec] = []
-    if n == 2 and ("interview" in (req.idea or "").lower() or "ইন্টারভিউ" in (req.idea or "")):
+    if creative_type in {"COMEDY", "SKIT"}:
         specs.append(_person(
             "Rafi" if bd else "Ray", "man", "24-28", bd, language,
             role="candidate",
-            wardrobe="slightly tight shirt, cheap tie, nervous crease",
+            wardrobe="slightly tight white shirt, cheap dark tie, nervous crease",
             personality="overconfident, answers before listening",
             voice="bright, too eager",
         ))
         specs.append(_person(
             "Kabir" if bd else "Hassan", "man", "38-46", bd, language,
             role="interviewer",
-            wardrobe="plain office shirt, no tie, tired eyes",
+            wardrobe="plain pale office shirt, no tie, tired eyes",
             personality="exhausted, professionally polite",
             voice="flat, dry",
         ))

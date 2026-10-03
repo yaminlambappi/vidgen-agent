@@ -77,6 +77,17 @@ class TestAssetlessPlans(unittest.TestCase):
         self.assertIn("punchline", " ".join(job.brief.strategy_beats))
         first = job.storyboard.shots[0]
         self.assertIn("face", first.action.lower())
+        self.assertEqual(len(job.storyboard.shots), 1)
+        self.assertIn(first.duration, {4, 6, 8})
+        self.assertIn("two-shot", first.camera.lower())
+        self.assertIn("never a selfie", first.camera.lower())
+        self.assertNotIn("phone-height close-up", first.camera.lower())
+        self.assertIn("নাম", job.script.full_text)
+        self.assertIn("প্রশ্নটা আবার", job.script.full_text)
+        prompt = (first.generation_prompt or "").lower()
+        self.assertIn("two people", prompt)
+        self.assertIn("never selfie", prompt)
+        self.assertNotIn("wine", prompt)
         ids = {c.character_id for c in job.character_bible}
         for shot in job.storyboard.shots:
             self.assertTrue(set(shot.characters) <= ids)
@@ -152,6 +163,23 @@ class TestWatchabilityAndQC(unittest.TestCase):
 
     def test_duration_cap(self):
         self.assertEqual(MAX_DURATION_SECONDS, 30.0)
+
+    def test_comedy_skips_polish_and_burned_captions(self):
+        from unittest.mock import patch
+        from vidgen.reels.edit import should_burn_subtitles
+        from vidgen.reels.llm import maybe_polish_script
+
+        job = ReelJob(request=_req(
+            "একটা funny Bengali Reel বানাও যেখানে একজন ছেলে interview দিতে গিয়ে confident ভাবে সব প্রশ্নের ভুল উত্তর দেয়",
+            duration_seconds=15,
+        ))
+        plan_production(job)
+        self.assertFalse(should_burn_subtitles(job))
+        with patch("vidgen.reels.llm.settings") as s, patch("vidgen.reels.llm.execute_expensive") as ex:
+            s.DRY_RUN = False
+            s.is_production = True
+            maybe_polish_script(job, store=None, dry=False)
+            ex.assert_not_called()
 
 
 if __name__ == "__main__":
