@@ -70,10 +70,19 @@ class TestDuration(unittest.TestCase):
             ReelRequest(idea="Make me a reel about tea", duration_seconds=30.01)
 
     def test_planner_never_exceeds_30(self):
+        from vidgen.reels.duration import snap_veo_duration
         for target in (10, 12, 15, 20, 25, 29.9, 30):
             durs = plan_shot_durations(target)
             self.assertLessEqual(sum(durs), MAX_DURATION_SECONDS)
             self.assertTrue(is_duration_valid(sum(durs)))
+            for d in durs:
+                self.assertIn(int(d), (4, 6, 8), f"illegal Veo duration {d} for target={target}")
+
+    def test_five_seconds_is_not_a_veo_length(self):
+        from vidgen.reels.duration import snap_veo_duration
+        self.assertEqual(snap_veo_duration(5), 6)
+        self.assertNotIn(5, plan_shot_durations(15, preferred_shots=2))
+        self.assertNotIn(7, plan_shot_durations(20, preferred_shots=3))
 
     def test_speech_estimate_positive(self):
         self.assertGreater(estimate_speech_seconds("This is a short line.", "english"), 0.2)
