@@ -233,6 +233,16 @@ class TestCheckpointResume(unittest.TestCase):
         # All shots already exist — must not go back to planning
         self.assertNotEqual(stage, ReelStatus.QUEUED)
         self.assertNotEqual(stage, ReelStatus.PLANNING)
+        self.assertEqual(stage, ReelStatus.ASSEMBLING)
+
+    def test_missing_ffmpeg_is_application_failure(self):
+        from vidgen.reels.edit import FFmpegMissing
+        from vidgen.reels.safety import classify_failure
+        from vidgen.reels.schemas import FailureClass
+        self.assertEqual(
+            classify_failure(FFmpegMissing("ffmpeg/ffprobe is required")),
+            FailureClass.APPLICATION,
+        )
 
 
 class TestSimulationMedia(unittest.TestCase):

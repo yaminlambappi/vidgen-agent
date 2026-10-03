@@ -11,11 +11,24 @@ from vidgen.reels.duration import assert_duration
 from vidgen.reels.schemas import ReelJob
 
 
-def _ffmpeg() -> str:
+class FFmpegMissing(RuntimeError):
+    """Local encoder missing — not a Veo/TTS failure. Resume assembly after install."""
+
+
+def require_ffmpeg() -> str:
     ff = shutil.which("ffmpeg")
-    if not ff:
-        raise RuntimeError("ffmpeg is required for reel assembly")
+    probe = shutil.which("ffprobe")
+    if not ff or not probe:
+        raise FFmpegMissing(
+            "ffmpeg/ffprobe is required for reel assembly. "
+            "Install with: sudo apt-get update && sudo apt-get install -y ffmpeg "
+            "then resume the same job. Do not start a new live run."
+        )
     return ff
+
+
+def _ffmpeg() -> str:
+    return require_ffmpeg()
 
 
 def _run(cmd: List[str]) -> None:
@@ -104,6 +117,8 @@ def assemble_reel(
         dst = str(work / f"vshot_{i:02d}.mp4")
         try:
             normalize_vertical(src, dst, dur)
+        except FFmpegMissing:
+            raise
         except Exception:
             write_vertical_plate(dst, dur, color=["0x201810", "0x1c1c22", "0x182018"][i % 3])
         normalized.append(dst)

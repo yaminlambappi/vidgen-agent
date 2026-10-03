@@ -20,7 +20,7 @@ from vidgen.reels.constants import MAX_DURATION_SECONDS
 from vidgen.reels.creative import plan_production
 from vidgen.reels.llm import maybe_polish_script
 from vidgen.reels.duration import assert_duration, is_duration_valid
-from vidgen.reels.edit import assemble_reel, write_vertical_plate
+from vidgen.reels.edit import assemble_reel, require_ffmpeg, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
 from vidgen.reels.qc import run_qc
 from vidgen.reels.safety import (
@@ -69,8 +69,14 @@ class ReelFactory:
         else:
             dry = bool(dry_run)
         job.request.dry_run = dry
-        job.pipeline_attempts += 1
-        check_pipeline_attempts(job)
+        if not dry:
+            require_ffmpeg()
+        resume_only = job.status == ReelStatus.FAILED and infer_resume_stage(job) in {
+            ReelStatus.ASSEMBLING, ReelStatus.QC, ReelStatus.EDIT_PLAN_READY, ReelStatus.AUDIO_READY,
+        }
+        if not resume_only:
+            job.pipeline_attempts += 1
+            check_pipeline_attempts(job)
         root = settings.VIDGEN_WORK_ROOT / "reels" / job.job_id
         root.mkdir(parents=True, exist_ok=True)
         store = IdempotencyStore(root)
@@ -84,11 +90,12 @@ class ReelFactory:
             klass = classify_failure(exc)
             job.failure_class = klass.value
             job.last_error = str(exc)[:500]
-            try:
-                note_repeat_failure(job, hashlib.sha256(str(exc).encode()).hexdigest())
-            except CostGuardTripped:
-                checkpoint(job, self.storage)
-                return job
+            if klass != FailureClass.APPLICATION:
+                try:
+                    note_repeat_failure(job, hashlib.sha256(str(exc).encode()).hexdigest())
+                except CostGuardTripped:
+                    checkpoint(job, self.storage)
+                    return job
             if job.status != ReelStatus.FAILED_COST_GUARD:
                 try:
                     transition(job, ReelStatus.FAILED, f"Pipeline failure: {exc}")

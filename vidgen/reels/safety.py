@@ -132,6 +132,8 @@ def classify_failure(exc: Exception) -> FailureClass:
     if isinstance(exc, DryRunViolation):
         return FailureClass.APPLICATION
     msg = str(exc).lower()
+    if "ffmpeg" in msg or "ffprobe" in msg:
+        return FailureClass.APPLICATION
     if "duration" in msg or "max_duration" in msg:
         return FailureClass.DURATION
     if kind == "deterministic":
