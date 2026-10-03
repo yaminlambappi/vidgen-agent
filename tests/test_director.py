@@ -48,6 +48,20 @@ class TestLongFormPlan(unittest.TestCase):
         self.assertTrue(job.dry_run_manifest.offer.get("duration_honored"))
         self.assertGreaterEqual(job.dry_run_manifest.offer.get("veo_shots"), 5)
 
+    def test_monsoon_plan_is_not_an_apartment_slogan(self):
+        job = plan_director("Make a 90 second cinematic film about monsoon in Dhaka", language="english")
+        text = job.script.full_text.lower()
+        self.assertNotIn("watch this for one second", text)
+        self.assertNotIn("that's the whole thing", text)
+        self.assertTrue("rain" in text or "dhaka" in text)
+        places = " ".join(s.location for s in job.storyboard.shots).lower()
+        self.assertNotIn("lived-in apartment", places)
+        self.assertIn("rain", places + job.storyboard.shots[0].action.lower())
+        self.assertGreaterEqual(len({s.location for s in job.storyboard.shots}), 4)
+        self.assertGreaterEqual(job.storyboard.total_duration, 80.0)
+        hooks = [c.line for c in job.hook.concepts]
+        self.assertEqual(len(hooks), len(set(hooks)))
+
     def test_reel_request_still_rejects_31_without_long_form(self):
         with self.assertRaises(Exception):
             ReelRequest(idea="a reel about tea stall light", duration_seconds=31)
