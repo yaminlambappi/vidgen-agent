@@ -53,7 +53,7 @@ _PRODUCT_HINTS = (
     ("skincare", "serum", "cream", "moisturizer", "skin", "স্কিন", "ক্রيم", "সিরাম"),
     ("food", "restaurant", "cafe", "biryani", "tea", "খাবার", "রেস্তোরাঁ"),
     ("fashion", "clothing", "dress", "sharee", "saree", "পোশাক", "শাড়ি"),
-    ("saas", "app", "software", "platform"),
+    ("saas", "app", "software", "platform", "agent", "vidgen", "factory"),
     ("finance", "bank", "loan", "wallet"),
 )
 
@@ -269,6 +269,14 @@ def _hook_bank(lang: str, product: str, kind: str) -> dict:
                 "direct_statement": (f"{product} চিৎকার করে না। তুলে খাওয়া যায়।", "Close on food, then a face."),
                 "question": ("আজকে কি সত্যি খেতে ইচ্ছে করছে?", "A look down at the plate."),
             },
+            "saas": {
+                "curiosity": (f"এই রিলটা {product}-এ এক লাইনে বানানো।", "Face already talking, phone in hand."),
+                "problem": ("একটা রিলের জন্য দুই সপ্তাহ এজেন্সি।", "Tired at a laptop, then a look up."),
+                "relatable_situation": ("আইডিয়া ছিল। এডিটর ছিল না।", "Talking to one friend, laptop open."),
+                "product_reveal": (f"এটা {product}। আইডিয়া লিখো, রিল বেরোয়।", "Laptop or phone, no fake UI."),
+                "direct_statement": (f"{product} অভিনয় করে না। আউটপুট দেয়।", "Still, honest framing."),
+                "question": ("তোমার এডিটর কাল ফ্রি?", "A small pause."),
+            },
         }
         default = {
             "curiosity": (f"{product}টা একবার দেখলেই মাথায় থেকে যায়।", "Face, then the thing in hand."),
@@ -295,6 +303,14 @@ def _hook_bank(lang: str, product: str, kind: str) -> dict:
             "product_reveal": (f"This is {product}. Dot, press, leave.", "Hands, pump, no smear theatre."),
             "direct_statement": (f"{product} does not perform glow. It sits in.", "Still, honest framing."),
             "question": ("Does your skin stay angry until night?", "A pause at the door."),
+        },
+        "saas": {
+            "curiosity": (f"This Reel was one sentence in {product}.", "Face already talking, laptop open."),
+            "problem": ("Agencies take two weeks for one Reel.", "Tired at a desk, then a look up."),
+            "relatable_situation": ("I had the idea. I did not have an editor.", "Talking to one friend."),
+            "product_reveal": (f"This is {product}. Type the idea. Get the Reel.", "Laptop or phone, no fake UI."),
+            "direct_statement": (f"{product} does not perform. It ships the video.", "Still, honest framing."),
+            "question": ("Is your editor free tomorrow?", "A small pause."),
         },
         "food": {
             "curiosity": (f"You smell {product} before you see it.", "Steam, real plate."),
@@ -448,8 +464,15 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
             "perfume": "জোরে ঘোষণা করার মতো কিছু না। কাছে এলেই বোঝা যায়।",
             "skincare": "জোর করে গ্লো না। একটু হলেই বোঝা যায়।",
             "food": "চিৎকার করে না। তুলে খেলেই বোঝা যায়।",
+            "saas": "আইডিয়া লিখো। রিলটা বেরিয়ে আসে। এডিটরের অপেক্ষা না।",
         }.get(kind, "জোরে বলার মতো কিছু না। কাছে এলেই বোঝা যায়।")
         body = [hook_line, mid, f"{product} এমন, যেটা নিজের মতো ব্যবহার করা যায়।"]
+        if kind == "saas":
+            body = [
+                hook_line or f"এই রিলটা {product}-এ এক লাইনে বানানো।",
+                "এজেন্সি দুই সপ্তাহ নেয়। আমি একটা বাক্য লিখেছি।",
+                brief.cta or "নিজের আইডিয়ায় চালাও।",
+            ]
         if brief.needs_cta and brief.cta:
             body.append(brief.cta)
     elif lang == "bengali_english":
@@ -457,8 +480,15 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
             "perfume": f"{product}টা loud না। কাছে এলেই catch হয়।",
             "skincare": f"{product}টা dramatic না। মুখে দিলেই বোঝা যায়।",
             "food": f"{product}টা extra না। এক বাইটেই ধরা যায়।",
+            "saas": f"{product}এ idea লিখো। Reel বেরোয়। Editor wait না।",
         }.get(kind, f"{product}টা loud না। কাছে এলেই বোঝা যায়।")
         body = [hook_line, mid, "Office থেকে বেরোনোর আগে একটু — that's it."]
+        if kind == "saas":
+            body = [
+                hook_line or f"This Reel was one line in {product}.",
+                "Agency দুই সপ্তাহ নেয়। আমি একটা sentence লিখেছি।",
+                brief.cta or "Run it on your own idea.",
+            ]
         if brief.needs_cta and brief.cta:
             body.append(brief.cta)
     else:
@@ -466,8 +496,15 @@ def _script_lines(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) ->
             "perfume": "It doesn't announce itself. You notice it when someone leans in.",
             "skincare": "It doesn't perform glow. You notice it in the afternoon light.",
             "food": "It doesn't shout. You just want the next bite.",
+            "saas": "Type the idea. The Reel comes out. No editor queue.",
         }.get(kind, "It doesn't perform. You notice it when you actually use it.")
         body = [hook_line, mid, f"{product} is for the version of you that already left the house."]
+        if kind == "saas":
+            body = [
+                hook_line or f"This Reel was one sentence in {product}.",
+                "Agencies take two weeks. I typed one line.",
+                brief.cta or f"Run {product} on your own idea.",
+            ]
         if brief.needs_cta and brief.cta:
             body.append(brief.cta)
     # Strip generic AI openings
@@ -487,8 +524,8 @@ def build_script(brief: CreativeBrief, req: ReelRequest, hook: HookStrategy) -> 
     target = min(float(brief.duration_seconds), 30.0)
     # Speech should occupy ~55-70% of runtime; leave room for picture
     speech_budget = max(4.0, min(target * 0.68, target - 2.0))
-    if brief.creative_type in {"COMEDY", "SKIT"}:
-        # Punchline is the last line. Never trim a two-person joke to fit a budget.
+    if brief.creative_type in {"COMEDY", "SKIT"} or _product_kind(req) == "saas":
+        # Punchline / CTA is the last line. Never trim it to fit a budget.
         joke = estimate_speech_seconds(" ".join(raw), brief.language)
         return _finalize_script(brief, raw, target, max(speech_budget, joke + 0.4))
     kept_text: List[str] = []
@@ -653,6 +690,9 @@ def build_storyboard(job: ReelJob) -> Storyboard:
         preferred = 2 if target <= 20 else 3
     if brief.creative_type in {"COMEDY", "SKIT"}:
         # One Veo take = one room, two faces. A second generation is how the actor changed.
+        preferred = 1
+        durations = [float(8 if target >= 8 else snap_veo_duration(target))]
+    elif _product_kind(job.request) == "saas" and brief.talking_head:
         preferred = 1
         durations = [float(8 if target >= 8 else snap_veo_duration(target))]
     else:

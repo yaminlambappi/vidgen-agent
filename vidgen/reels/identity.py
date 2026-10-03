@@ -150,6 +150,7 @@ def build_fictional_or_named_product(req: ReelRequest, kind: str, needed: bool) 
         "skincare": "compact pump bottle, matte label, no invented logo type",
         "food": "real plated or packaged item, consistent across shots",
         "fashion": "garment as worn, fabric weight visible",
+        "saas": "open laptop or phone on a real desk, terminal or editor visible, no fake invented UI chrome, NEVER a perfume bottle",
     }
     return ProductSpec(
         name=full,
@@ -167,6 +168,7 @@ def build_fictional_or_named_product(req: ReelRequest, kind: str, needed: bool) 
         correct_usage={
             "perfume": "spray on wrist or neck, then a small beat",
             "skincare": "dot and press",
+            "saas": "hands on a laptop or phone, talking, no bottle",
         }.get(kind, "handle like a real owner"),
         orientation="label-readable when the product is the subject",
     )
