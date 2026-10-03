@@ -77,8 +77,10 @@ class TestAssetlessPlans(unittest.TestCase):
         self.assertIn("punchline", " ".join(job.brief.strategy_beats))
         first = job.storyboard.shots[0]
         self.assertIn("face", first.action.lower())
-        self.assertEqual(len(job.storyboard.shots), 1)
+        self.assertGreaterEqual(len(job.storyboard.shots), 1)
         self.assertIn(first.duration, {4, 6, 8})
+        self.assertGreaterEqual(job.storyboard.total_duration, 12.0)
+        self.assertLessEqual(job.storyboard.total_duration, 16.0)
         self.assertIn("two-shot", first.camera.lower())
         self.assertIn("never a selfie", first.camera.lower())
         self.assertNotIn("phone-height close-up", first.camera.lower())
@@ -135,10 +137,14 @@ class TestDryRunAndCost(unittest.TestCase):
         self.assertEqual(job.dry_run_manifest.expensive_calls_made, 0)
         self.assertEqual(job.dry_run_manifest.creative_type, "COMEDY")
         self.assertEqual(job.dry_run_manifest.language, "bengali")
-        self.assertLessEqual(job.dry_run_manifest.estimated_veo_calls, 3)
+        self.assertLessEqual(job.dry_run_manifest.estimated_veo_calls, 4)
         self.assertEqual(job.dry_run_manifest.estimated_image_calls, 0)
         self.assertTrue(job.dry_run_manifest.script)
         self.assertTrue(job.production_manifest)
+        offer = job.dry_run_manifest.offer
+        self.assertTrue(offer.get("duration_honored"), offer)
+        self.assertGreaterEqual(offer.get("planned_seconds"), 12)
+        self.assertEqual(offer.get("product"), "VidGen Shorts Factory")
 
     def test_blocked_historical_job(self):
         self.assertIn("9237d967-2507-4a55-b98d-d8609db37e0d", BLOCKED_JOB_IDS)
@@ -165,6 +171,16 @@ class TestWatchabilityAndQC(unittest.TestCase):
 
     def test_duration_cap(self):
         self.assertEqual(MAX_DURATION_SECONDS, 30.0)
+
+    def test_fifteen_seconds_is_not_silently_eight(self):
+        job = ReelJob(request=_req(
+            "UGC founder reel for VidGen. A person talks to camera about one idea becoming a Reel.",
+            duration_seconds=15,
+            product_name="VidGen",
+        ))
+        plan_production(job)
+        self.assertGreaterEqual(job.storyboard.total_duration, 12.0)
+        self.assertNotEqual(job.storyboard.total_duration, 8.0)
 
     def test_lame_name_joke_is_banned(self):
         from vidgen.reels.comedy import comedy_script_lines, detect_situation, is_lame_comedy

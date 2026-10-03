@@ -18,7 +18,6 @@ from vidgen.reels.duration import (
     estimate_speech_seconds,
     plan_shot_durations,
     restructure_timeline,
-    snap_veo_duration,
 )
 from vidgen.reels.identity import build_cast, build_fictional_or_named_product
 from vidgen.reels.intent import (
@@ -685,19 +684,13 @@ def build_storyboard(job: ReelJob) -> Storyboard:
     chars = job.character_bible or [build_character(brief, job.request)]
     char = chars[0]
     target = min(float(brief.duration_seconds), 30.0)
-    preferred = 3 if target >= 15 else 2
+    preferred = 2 if target <= 16 else 3 if target <= 24 else 4
     if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         preferred = 2 if target <= 20 else 3
     if brief.creative_type in {"COMEDY", "SKIT"}:
-        # One Veo take = one room, two faces. A second generation is how the actor changed.
-        preferred = 1
-        durations = [float(8 if target >= 8 else snap_veo_duration(target))]
-    elif _product_kind(job.request) == "saas" and brief.talking_head:
-        preferred = 1
-        durations = [float(8 if target >= 8 else snap_veo_duration(target))]
-    else:
-        durations = plan_shot_durations(target, preferred_shots=preferred)
-        durations = [float(d) for d in restructure_timeline(durations, cap=target)]
+        preferred = 2 if target > 10 else 1
+    durations = plan_shot_durations(target, preferred_shots=preferred)
+    durations = [float(d) for d in restructure_timeline(durations, cap=target)]
     if brief.creative_type in {"EDUCATIONAL", "EXPLAINER", "FACT"}:
         durations = durations[:preferred]
     spans = assign_timeline(durations)

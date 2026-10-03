@@ -79,6 +79,12 @@ class Settings:
     DURATION_TOLERANCE_SECONDS = int(os.getenv("DURATION_TOLERANCE_SECONDS", "10"))
     # Veo 3.1 text_to_video: only 4, 6, 8. reference_to_video is 8s-only.
     VEO_VALID_DURATIONS = (4, 6, 8)
+    # Planning quote only — not a Google invoice.
+    VEO_USD_PER_SECOND = float(os.getenv("VEO_USD_PER_SECOND", "0.40"))
+    FACTORY_LIST_PRICE_USD = float(os.getenv("FACTORY_LIST_PRICE_USD", "99"))
+    FACTORY_MONTHLY_USD = float(os.getenv("FACTORY_MONTHLY_USD", "799"))
+    FACTORY_MONTHLY_REELS = int(os.getenv("FACTORY_MONTHLY_REELS", "12"))
+    AGENCY_COMPARABLE_USD = float(os.getenv("AGENCY_COMPARABLE_USD", "450"))
 
     @property
     def is_production(self) -> bool:

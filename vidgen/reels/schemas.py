@@ -479,6 +479,7 @@ class DryRunManifest(BaseModel):
     caption_plan: str = ""
     qc_gates: List[str] = Field(default_factory=list)
     watchability: Dict[str, Any] = Field(default_factory=dict)
+    offer: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QCReport(BaseModel):

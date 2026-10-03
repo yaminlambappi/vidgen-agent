@@ -98,7 +98,18 @@ def main() -> int:
         print(json.dumps(_payload(job), indent=2, default=str))
         return 1
 
-    print(json.dumps(_payload(job), indent=2, default=str))
+    payload = _payload(job)
+    print(json.dumps(payload, indent=2, default=str))
+    offer = (job.dry_run_manifest.offer if job.dry_run_manifest else None) or {}
+    if offer:
+        print(
+            f"\n[OFFER] {offer.get('product')}  rent=${offer.get('rent_usd')}  "
+            f"planned={offer.get('planned_seconds')}s  "
+            f"compute~${offer.get('estimated_compute_usd')}  "
+            f"agency~${offer.get('agency_comparable_usd')}  "
+            f"honored={offer.get('duration_honored')}",
+            file=sys.stderr,
+        )
     return 0 if job.status.value == "complete" else 1
 
 

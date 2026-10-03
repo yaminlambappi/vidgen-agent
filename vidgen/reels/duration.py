@@ -91,9 +91,10 @@ def plan_shot_durations(target_seconds: float, preferred_shots: int = 0) -> List
         raise DurationExceeded("target duration must be positive")
 
     valid = sorted(tuple(VEO_VALID_DURATIONS) or (4, 6, 8))
-    max_shots = min(6, int(cap // min(valid)) or 1)
-    min_shots = 1
     want = preferred_shots if preferred_shots > 0 else (2 if cap <= 16 else 3 if cap <= 24 else 4)
+    # Few longer takes. Five 4s clips is how faces change and the reel feels empty.
+    max_shots = min(4, int(cap // min(valid)) or 1, max(1, want) + 1)
+    min_shots = 1
     want = max(min_shots, min(want, max_shots))
 
     best: List[int] = []
@@ -116,7 +117,11 @@ def plan_shot_durations(target_seconds: float, preferred_shots: int = 0) -> List
             continue
         if sum(candidate) > MAX_DURATION_SECONDS:
             continue
-        diff = abs(sum(candidate) - cap) + abs(len(candidate) - want) * 0.35
+        diff = (
+            abs(sum(candidate) - cap)
+            + abs(len(candidate) - want) * 1.6
+            + candidate.count(min(valid)) * 0.45
+        )
         if diff < best_diff:
             best_diff = diff
             best = candidate

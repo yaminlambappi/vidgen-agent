@@ -20,6 +20,7 @@ from vidgen.reels.audio import (
 from vidgen.reels.assets import apply_compose_strategy, plan_assets, resolve_assets
 from vidgen.reels.constants import BLOCKED_JOB_IDS, MAX_DURATION_SECONDS
 from vidgen.reels.creative import build_storyboard, plan_production
+from vidgen.reels.offer import build_commercial_offer
 from vidgen.reels.watchability import score_watchability
 from vidgen.reels.llm import maybe_polish_script, maybe_write_comedy_script
 from vidgen.reels.duration import assert_duration, assign_timeline, legalize_shot_durations
@@ -323,6 +324,7 @@ class ReelFactory:
             caption_plan="from final script, lower-third, language-locked",
             qc_gates=["creative", "language", "asset", "continuity", "timing", "cost", "watchability"],
             watchability=score.model_dump(),
+            offer=build_commercial_offer(job),
         )
 
     def _production_manifest(self, job: ReelJob) -> ProductionManifest:
