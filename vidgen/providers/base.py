@@ -13,6 +13,8 @@ class VideoGenerator(ABC):
         project_id: str,
         shot_id: str,
         reference_assets: List[dict] | None = None,
+        aspect_ratio: str = "16:9",
+        generate_audio: bool = False,
     ) -> GenerationJob:
         pass
 

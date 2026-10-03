@@ -18,13 +18,40 @@ class Settings:
     GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     GCS_BUCKET = os.getenv("GCS_BUCKET", "vidgen-media-assets")
 
-    # veo-3.1-generate-001 confirmed on vidgen-504817 / us-central1
+    # Configurable model IDs — never scatter hardcoded names in pipeline code.
+    # GEMINI_MODEL / GEMINI_IMAGE_MODEL take precedence; DIRECTOR_MODEL / IMAGE_MODEL remain aliases.
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL") or os.getenv("DIRECTOR_MODEL", "gemini-2.5-flash")
+    DIRECTOR_MODEL = GEMINI_MODEL
+    GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL") or os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
+    IMAGE_MODEL = GEMINI_IMAGE_MODEL
+    # veo-3.1-generate-001 confirmed on the configured Vertex project / us-central1
     VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-generate-001")
-    DIRECTOR_MODEL = os.getenv("DIRECTOR_MODEL", "gemini-2.5-flash")
-    # Confirmed listed by the configured Vertex project; Imagen 3 is not.
-    IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
+    TTS_MODEL = os.getenv("TTS_MODEL", "neural2")
     TTS_VOICE = os.getenv("TTS_VOICE", "en-US-Neural2-J")
+    TTS_VOICE_BN = os.getenv("TTS_VOICE_BN", "bn-IN-Wavenet-A")
+    TTS_VOICE_BN_MALE = os.getenv("TTS_VOICE_BN_MALE", "bn-IN-Wavenet-B")
     BURN_SUBTITLES = os.getenv("BURN_SUBTITLES", "true").lower() == "true"
+
+    # ── Reels / Shorts factory ───────────────────────────────────────────────
+    DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+    MAX_DURATION_SECONDS = float(os.getenv("MAX_DURATION_SECONDS", "30.0"))
+    REEL_WIDTH = int(os.getenv("REEL_WIDTH", "1080"))
+    REEL_HEIGHT = int(os.getenv("REEL_HEIGHT", "1920"))
+    REEL_ASPECT_RATIO = os.getenv("REEL_ASPECT_RATIO", "9:16")
+    REEL_FPS = int(os.getenv("REEL_FPS", "24"))
+    DEFAULT_REEL_DURATION = float(os.getenv("DEFAULT_REEL_DURATION", "20.0"))
+
+    # Conservative hard generation budgets — never unlimited.
+    MAX_PIPELINE_ATTEMPTS = int(os.getenv("MAX_PIPELINE_ATTEMPTS", "2"))
+    MAX_VEO_CALLS = int(os.getenv("MAX_VEO_CALLS", "8"))
+    MAX_IMAGE_CALLS = int(os.getenv("MAX_IMAGE_CALLS", "4"))
+    MAX_TTS_CALLS = int(os.getenv("MAX_TTS_CALLS", "6"))
+    MAX_GEMINI_CALLS = int(os.getenv("MAX_GEMINI_CALLS", "12"))
+    MAX_REGENERATION_PER_SHOT = int(os.getenv("MAX_REGENERATION_PER_SHOT", "1"))
+    MAX_PIPELINE_RUNTIME = int(os.getenv("MAX_PIPELINE_RUNTIME", "3600"))
+    MAX_TOTAL_GENERATION_BUDGET = int(os.getenv("MAX_TOTAL_GENERATION_BUDGET", "20"))
+    MAX_REEL_SHOTS = int(os.getenv("MAX_REEL_SHOTS", "6"))
+    CIRCUIT_BREAKER_REPEAT_FAILURES = int(os.getenv("CIRCUIT_BREAKER_REPEAT_FAILURES", "2"))
 
     VIDGEN_WORK_ROOT = Path(os.getenv("VIDGEN_WORK_ROOT", "/tmp/vidgen"))
 

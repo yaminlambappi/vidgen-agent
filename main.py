@@ -13,6 +13,9 @@ from fastapi.responses import FileResponse
 from vidgen.config import settings
 from vidgen.models import FilmProject, FilmStatus, ProductionMode
 from vidgen.orchestrator import Orchestrator
+from vidgen.reels.factory import ReelFactory
+from vidgen.reels.safety import load_checkpoint
+from vidgen.reels.schemas import InputAsset, ReelJob, ReelRequest, ReelStatus
 from pathlib import Path
 import hashlib, json
 
@@ -23,7 +26,9 @@ app = FastAPI(
 
 # In-memory storage for active projects (backed by GCS checkpoints in Orchestrator)
 active_projects: Dict[str, FilmProject] = {}
+active_reels: Dict[str, ReelJob] = {}
 orchestrator = Orchestrator()
+reel_factory = ReelFactory()
 
 
 class FilmCreateRequest(BaseModel):
@@ -33,6 +38,25 @@ class FilmCreateRequest(BaseModel):
     language: str = Field("English")
     aspect_ratio: str = Field("16:9")
     production_mode: ProductionMode = Field(ProductionMode.SHORT_FILM)
+
+
+class ReelCreateRequest(BaseModel):
+    idea: str = Field(..., min_length=3)
+    language: str = Field("english")
+    duration_seconds: float = Field(20, gt=0, le=30)
+    audience: str = ""
+    style: str = ""
+    goal: str = ""
+    cta: str = ""
+    product_name: str = ""
+    brand_name: str = ""
+    platform: str = "instagram_reels"
+    voice_gender: str = ""
+    content_mode: str = ""
+    allowed_claims: List[str] = Field(default_factory=list)
+    product_image_uris: List[str] = Field(default_factory=list)
+    variant_count: int = Field(1, ge=1, le=3)
+    dry_run: bool = False
 
 
 def _submit_cloud_run_job(project_id: str) -> dict:
@@ -80,9 +104,13 @@ def _submit_cloud_run_job(project_id: str) -> dict:
 def health_check():
     return {
         "status": "healthy",
-        "service": "VidGen Autonomous Film Studio",
+        "service": "VidGen Reels Super Factory",
         "film_mode": settings.FILM_MODE,
         "allow_real_generation": settings.ALLOW_REAL_GENERATION,
+        "dry_run": settings.DRY_RUN,
+        "max_duration_seconds": settings.MAX_DURATION_SECONDS,
+        "veo_model": settings.VEO_MODEL,
+        "gemini_model": settings.GEMINI_MODEL,
         "location": settings.GOOGLE_CLOUD_LOCATION
     }
 
@@ -267,6 +295,103 @@ def generate_film(project_id: str, bg_tasks: BackgroundTasks):
     
     bg_tasks.add_task(orchestrator.run, project)
     return {"status": "production_generation_started", "project_id": project_id}
+
+def _to_reel_request(payload: ReelCreateRequest) -> ReelRequest:
+    assets = [
+        InputAsset(kind="product_image", uri=uri, authoritative=True)
+        for uri in payload.product_image_uris if uri
+    ]
+    return ReelRequest(
+        idea=payload.idea,
+        language=payload.language,
+        duration_seconds=payload.duration_seconds,
+        audience=payload.audience,
+        style=payload.style,
+        goal=payload.goal,
+        cta=payload.cta,
+        product_name=payload.product_name,
+        brand_name=payload.brand_name,
+        platform=payload.platform,
+        voice_gender=payload.voice_gender,
+        content_mode=payload.content_mode,
+        allowed_claims=payload.allowed_claims,
+        assets=assets,
+        variant_count=payload.variant_count,
+        dry_run=payload.dry_run,
+    )
+
+
+def _load_reel(job_id: str) -> ReelJob | None:
+    if job_id in active_reels:
+        return active_reels[job_id]
+    loaded = load_checkpoint(job_id, reel_factory.storage)
+    if loaded:
+        active_reels[job_id] = loaded
+    return loaded
+
+
+def _reel_status_payload(job: ReelJob) -> dict:
+    return {
+        "job_id": job.job_id,
+        "status": job.status.value,
+        "progress": job.progress,
+        "message": job.message,
+        "dry_run": job.request.dry_run,
+        "target_duration": job.request.duration_seconds,
+        "max_duration": 30.0,
+        "generation_count": job.ledger.total_calls,
+        "veo_calls": job.ledger.veo_calls,
+        "tts_calls": job.ledger.tts_calls,
+        "image_calls": job.ledger.image_calls,
+        "failure_reason": job.last_error or None,
+        "final_video_uri": job.final_video_uri or None,
+        "dry_run_manifest": job.dry_run_manifest.model_dump() if job.dry_run_manifest else None,
+        "qc": job.qc.model_dump() if job.qc else None,
+    }
+
+
+@app.post("/api/v1/reels")
+def create_reel(payload: ReelCreateRequest):
+    try:
+        req = _to_reel_request(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    job = reel_factory.create(req)
+    active_reels[job.job_id] = job
+    if payload.dry_run or settings.DRY_RUN:
+        job = reel_factory.run(job, dry_run=True)
+        active_reels[job.job_id] = job
+        return _reel_status_payload(job)
+    return _reel_status_payload(job)
+
+
+@app.get("/api/v1/reels/{job_id}")
+def get_reel(job_id: str):
+    job = _load_reel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Reel job not found")
+    return _reel_status_payload(job)
+
+
+@app.post("/api/v1/reels/{job_id}/dry-run")
+def dry_run_reel(job_id: str):
+    job = _load_reel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Reel job not found")
+    job = reel_factory.run(job, dry_run=True)
+    active_reels[job_id] = job
+    return _reel_status_payload(job)
+
+
+@app.post("/api/v1/reels/{job_id}/run")
+def run_reel(job_id: str):
+    job = _load_reel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Reel job not found")
+    job = reel_factory.run(job, dry_run=False)
+    active_reels[job_id] = job
+    return _reel_status_payload(job)
+
 
 @app.get("/status/{project_id}")
 def project_status(project_id: str):

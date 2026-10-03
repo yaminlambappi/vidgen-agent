@@ -11,7 +11,8 @@ from vidgen.utils.retry import call_with_retry, RateLimitExhausted
 
 
 class MockVideoGenerator(VideoGenerator):
-    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id="", reference_assets=None):
+    def generate_shot(self, prompt, output_uri, duration=8, project_id="", shot_id="",
+                      reference_assets=None, aspect_ratio="16:9", generate_audio=False, **_):
         import time as t; t.sleep(0.1)
         return GenerationJob(project_id=project_id, shot_id=shot_id, status="completed",
                              artifact_uri=f"{output_uri.rstrip('/')}/mock_{uuid.uuid4().hex[:8]}.mp4")
@@ -26,16 +27,16 @@ class VeoVideoGenerator(VideoGenerator):
         )
         self.model = settings.VEO_MODEL  # veo-3.1-generate-001
 
-    def _build_config(self, duration_seconds: int, output_uri: str, reference_assets: Iterable[dict] = ()):
+    def _build_config(self, duration_seconds: int, output_uri: str, reference_assets: Iterable[dict] = (),
+                      aspect_ratio: str = "16:9", generate_audio: bool = False):
         args = dict(
-            aspect_ratio="16:9",
+            aspect_ratio=aspect_ratio or "16:9",
             duration_seconds=duration_seconds,
             number_of_videos=1,
             output_gcs_uri=output_uri,
-            # Audio is disabled: VidGen supplies its own time-coded narration, dialogue,
-            # and score in final_mix(). Veo-baked audio would contaminate the soundtrack
-            # with model-generated voices that cannot be time-controlled.
-            generate_audio=False,
+            # Film pipeline keeps Veo audio off and mixes TTS/score in FFmpeg.
+            # Reels talking-head shots may enable native audio for lip-sync.
+            generate_audio=bool(generate_audio),
         )
         references = []
         for asset in reference_assets:
@@ -94,7 +95,8 @@ class VeoVideoGenerator(VideoGenerator):
         return None
 
     def generate_shot(self, prompt: str, output_uri: str, duration: int = 8,
-                      project_id: str = "", shot_id: str = "", reference_assets: Iterable[dict] = ()) -> GenerationJob:
+                      project_id: str = "", shot_id: str = "", reference_assets: Iterable[dict] = (),
+                      aspect_ratio: str = "16:9", generate_audio: bool = False, **_) -> GenerationJob:
         if not output_uri.endswith("/"):
             output_uri += "/"
         # When reference images are supplied (reference_to_video mode),
@@ -106,7 +108,11 @@ class VeoVideoGenerator(VideoGenerator):
         else:
             valid = set(settings.VEO_VALID_DURATIONS) or {5, 6, 7, 8}
             dur = duration if duration in valid else min(valid, key=lambda d: abs(d - duration))
-        config = self._build_config(dur, output_uri, reference_assets)
+        config = self._build_config(
+            dur, output_uri, reference_assets,
+            aspect_ratio=aspect_ratio or "16:9",
+            generate_audio=generate_audio,
+        )
 
         def _submit() -> GenerationJob:
             print(f"[VEO] {shot_id} submitting...")

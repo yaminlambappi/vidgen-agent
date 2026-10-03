@@ -16,6 +16,7 @@ class FilmStatus(str, Enum):
 class ProductionMode(str, Enum):
     SHORT_FILM = "short_film"
     PREMIUM_AUTOMOTIVE_AD = "premium_automotive_ad"
+    REEL = "reel"
 
 class AssetType(str, Enum):
     VIDEO = "video"

@@ -120,7 +120,12 @@ class ContentIntentAgent(BaseAgent):
                 "If the topic describes a vehicle, make it primary. "
                 "If the topic describes a person or emotion, they may be primary."
             ),
-        }[production_mode]
+            ProductionMode.REEL: (
+                "This is a SHORT-FORM SOCIAL REEL / advertisement (hard max 30 seconds). "
+                "The primary subject is usually a product, service, person, or place. "
+                "Derive it from the topic. Optimize for mobile 9:16, hook, trust, and CTA."
+            ),
+        }.get(production_mode, "Derive the primary subject from the topic. Do not assume a type.")
 
         return self.llm(
             f"TOPIC: {topic}\n\n"
@@ -243,7 +248,11 @@ class StoryArchitectAgent(BaseAgent):
                     "Tone: aspirational, cinematic, precise. "
                     "No generic automotive tropes. Aim for art-directed brand filmmaking."
                 ),
-            }[production_mode]
+                ProductionMode.REEL: (
+                    "This is a short-form social advertisement. Hook in the first 1-2 seconds. "
+                    "Natural speech. Realistic product handling. No generic cinematic tropes."
+                ),
+            }.get(production_mode, "Create a story appropriate to the topic and research.")
 
         return self.llm(
             f"Topic: {topic}\n\nResearch:\n{research[:4000]}\n\n"
@@ -388,7 +397,12 @@ class CinematographerAgent(BaseAgent):
                 "REQUIRED: Low angles that flatter silhouettes, tracking shots revealing surfaces, "
                 "macro detail inserts showing materials."
             ),
-        }[mode]
+            ProductionMode.REEL: (
+                "FORBIDDEN: unmotivated drone, decorative lens flares, meaningless slow motion, "
+                "plastic beauty-filter faces, looking at camera unless UGC/direct-address. "
+                "REQUIRED: 9:16 mobile framing, faces and product inside safe area, motivated cuts."
+            ),
+        }.get(mode, "REQUIRED: Every camera decision must have a specific narrative justification.")
 
         story_context = ""
         if p.story:
