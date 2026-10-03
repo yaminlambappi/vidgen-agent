@@ -75,9 +75,10 @@ def estimate_speech_seconds(
 
 
 def snap_veo_duration(seconds: float) -> int:
-    valid = tuple(VEO_VALID_DURATIONS) or (5, 6, 7, 8)
+    valid = tuple(VEO_VALID_DURATIONS) or (4, 6, 8)
     target = max(min(float(seconds), max(valid)), min(valid))
-    return min(valid, key=lambda d: abs(d - target))
+    # Prefer the longer legal length on a tie (5s → 6, not 4).
+    return min(valid, key=lambda d: (abs(d - target), -d))
 
 
 def plan_shot_durations(target_seconds: float, preferred_shots: int = 0) -> List[int]:
@@ -89,7 +90,7 @@ def plan_shot_durations(target_seconds: float, preferred_shots: int = 0) -> List
     if cap <= 0:
         raise DurationExceeded("target duration must be positive")
 
-    valid = sorted(tuple(VEO_VALID_DURATIONS) or (5, 6, 7, 8))
+    valid = sorted(tuple(VEO_VALID_DURATIONS) or (4, 6, 8))
     max_shots = min(6, int(cap // min(valid)) or 1)
     min_shots = 1
     want = preferred_shots if preferred_shots > 0 else (2 if cap <= 16 else 3 if cap <= 24 else 4)
@@ -102,13 +103,12 @@ def plan_shot_durations(target_seconds: float, preferred_shots: int = 0) -> List
         base = snap_veo_duration(cap / n)
         candidate = [base] * n
         total = sum(candidate)
-        # Shrink from the tail until under cap
+        # Shrink from the tail using only legal Veo lengths (4/6/8), never 5 or 7.
         while total > cap and candidate:
             idx = len(candidate) - 1
-            if candidate[idx] > min(valid):
-                candidate[idx] -= 1
-                if candidate[idx] not in valid:
-                    candidate[idx] = max(v for v in valid if v <= candidate[idx])
+            lower = [v for v in valid if v < candidate[idx]]
+            if lower:
+                candidate[idx] = max(lower)
             else:
                 candidate.pop()
             total = sum(candidate)
@@ -160,3 +160,12 @@ def restructure_timeline(durations: Iterable[float], cap: float | None = None) -
         values = [float(min(VEO_VALID_DURATIONS))]
     assert_duration(sum(values), "restructured timeline")
     return values
+
+
+def legalize_shot_durations(durations: Sequence[float], cap: float) -> List[int]:
+    """Force every Veo shot onto 4/6/8 and keep the sum <= cap and <= 30."""
+    limit = min(float(cap), MAX_DURATION_SECONDS)
+    valid = set(tuple(VEO_VALID_DURATIONS) or (4, 6, 8))
+    if durations and all(int(d) in valid for d in durations) and sum(durations) <= limit:
+        return [int(d) for d in durations]
+    return [int(d) for d in plan_shot_durations(limit, preferred_shots=len(list(durations)) or 0)]

@@ -22,7 +22,7 @@ from vidgen.reels.constants import BLOCKED_JOB_IDS, MAX_DURATION_SECONDS
 from vidgen.reels.creative import build_storyboard, plan_production
 from vidgen.reels.watchability import score_watchability
 from vidgen.reels.llm import maybe_polish_script
-from vidgen.reels.duration import assert_duration, is_duration_valid
+from vidgen.reels.duration import assert_duration, assign_timeline, legalize_shot_durations
 from vidgen.reels.edit import assemble_reel, require_ffmpeg, write_compose_card, write_vertical_plate
 from vidgen.reels.prompts import compile_shot_prompt
 from vidgen.reels.qc import run_qc
@@ -205,6 +205,30 @@ class ReelFactory:
             job.repeat_failure_count = 0
             transition(job, ReelStatus.COMPLETE, f"Reel complete <= {MAX_DURATION_SECONDS}s", 100)
 
+    def _legalize_veo_durations(self, job: ReelJob) -> None:
+        """Veo text_to_video only accepts 4/6/8. Rewrite illegal 5s/7s plans before spend."""
+        if not job.storyboard or not job.storyboard.shots:
+            return
+        veo_shots = [s for s in job.storyboard.shots if s.generation_strategy != "compose"]
+        if not veo_shots:
+            return
+        cap = min(float(job.storyboard.target_duration or job.request.duration_seconds), MAX_DURATION_SECONDS)
+        legal = legalize_shot_durations([s.duration for s in veo_shots], cap)
+        if len(legal) != len(veo_shots):
+            veo_shots = veo_shots[:len(legal)]
+            compose = [s for s in job.storyboard.shots if s.generation_strategy == "compose"]
+            job.storyboard.shots = veo_shots + compose
+        for shot, dur in zip(veo_shots, legal):
+            shot.duration = float(dur)
+        all_shots = job.storyboard.shots
+        spans = assign_timeline([s.duration for s in all_shots])
+        for shot, (dur, start, end) in zip(all_shots, spans):
+            shot.duration = dur
+            shot.start_time = start
+            shot.end_time = end
+        job.storyboard.total_duration = sum(s.duration for s in all_shots)
+        assert_duration(job.storyboard.total_duration, "legalized storyboard")
+
     def _lock_production_ref_durations(self, job: ReelJob) -> None:
         """Veo reference_to_video is 8s-only. Never let the locked timeline exceed 30s."""
         if not settings.is_production or not job.storyboard:
@@ -319,6 +343,7 @@ class ReelFactory:
 
     def _generate_shots(self, job: ReelJob, root: Path, store: IdempotencyStore, dry: bool) -> None:
         assert job.storyboard
+        self._legalize_veo_durations(job)
         self._lock_production_ref_durations(job)
         prev = None
         for shot in job.storyboard.shots:

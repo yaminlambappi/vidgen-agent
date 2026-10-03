@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from vidgen.reels.duration import snap_veo_duration
 from vidgen.reels.schemas import CharacterSpec, ProductSpec, ReelJob, ReelShot
 
 
@@ -105,7 +106,7 @@ def compile_shot_prompt(
         "prompt": scene,
         "reference_assets": refs[:3],
         "aspect_ratio": "9:16",
-        "duration": int(round(shot.duration)),
+        "duration": snap_veo_duration(shot.duration),
         "generate_audio": talking,
         "negative": " | ".join(negs),
     }

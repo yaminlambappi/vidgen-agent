@@ -106,7 +106,7 @@ class VeoVideoGenerator(VideoGenerator):
         if ref_list:
             dur = 8
         else:
-            valid = set(settings.VEO_VALID_DURATIONS) or {5, 6, 7, 8}
+            valid = set(settings.VEO_VALID_DURATIONS) or {4, 6, 8}
             dur = duration if duration in valid else min(valid, key=lambda d: abs(d - duration))
         config = self._build_config(
             dur, output_uri, reference_assets,

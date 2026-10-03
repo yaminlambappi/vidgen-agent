@@ -77,9 +77,8 @@ class Settings:
     # Tolerance (seconds) between requested and actual planned duration.
     # A planned duration within this tolerance of the target is accepted.
     DURATION_TOLERANCE_SECONDS = int(os.getenv("DURATION_TOLERANCE_SECONDS", "10"))
-    # Valid Veo shot durations (provider constraint). Shots are snapped to nearest.
-    # Veo 3.x confirmed range: 5–8 seconds inclusive.
-    VEO_VALID_DURATIONS = (5, 6, 7, 8)
+    # Veo 3.1 text_to_video: only 4, 6, 8. reference_to_video is 8s-only.
+    VEO_VALID_DURATIONS = (4, 6, 8)
 
     @property
     def is_production(self) -> bool:
