@@ -6,7 +6,7 @@ from .storage import CloudStorageProvider, MockStorageProvider
 
 def get_video_generator() -> VideoGenerator:
     if settings.is_production:
-        print(f"[FACTORY] VeoVideoGenerator ({settings.VEO_MODEL})")
+        print(f"[SUFI] VeoVideoGenerator ({settings.VEO_MODEL})")
         return VeoVideoGenerator()
     return MockVideoGenerator()
 

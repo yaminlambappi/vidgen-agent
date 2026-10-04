@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from vidgen.models import AssetReference, AssetType, GenerationJob
+from vidgen.models import GenerationJob
 from vidgen.providers.video import VeoVideoGenerator, MockVideoGenerator
 from vidgen.config import settings
 
