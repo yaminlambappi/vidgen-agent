@@ -39,6 +39,7 @@ class SufiResult(BaseModel):
     ledger: dict = Field(default_factory=dict)
     publish: dict = Field(default_factory=dict)
     probe: dict = Field(default_factory=dict)
+    gcs_video_uri: str = ""
 
 
 def _gemini_text(thought: str, duration: int, prompt_count: int, correction: str = "") -> str:
@@ -148,8 +149,8 @@ def generate(thought: str, *, llm=None, video_gen=None, tts_fn=None, publish: bo
         tts_fn(plan.script_text, str(voice_path))
         voice_source = "injected"
     elif settings.is_production:
-        cloud_tts(plan.script_text, str(voice_path.with_suffix(".mp3")))
         voice_path = voice_path.with_suffix(".mp3")
+        cloud_tts(plan.script_text, str(voice_path), ledger=ledger)
         voice_source = "cloud_tts"
     else:
         write_tone_voice(str(voice_path), plan.duration_seconds)
@@ -162,6 +163,8 @@ def generate(thought: str, *, llm=None, video_gen=None, tts_fn=None, publish: bo
     concat_video(slot_paths, str(picture))
     mux(str(picture), str(voice_path), str(bed), str(final), plan.duration_seconds)
     info = assert_reel(str(final), plan.duration_seconds)
+    from vidgen.providers import get_storage_provider
+    gcs_video_uri = get_storage_provider().upload(str(final), f"sufi/{job_id}/final_short.mp4")
 
     publication = {
         "youtube": {"status": "skipped", "reason": "disabled"},
@@ -182,6 +185,7 @@ def generate(thought: str, *, llm=None, video_gen=None, tts_fn=None, publish: bo
         ledger=ledger.model_dump(),
         publish=publication,
         probe=info,
+        gcs_video_uri=gcs_video_uri,
     )
     (root / "job.json").write_text(result.model_dump_json(indent=2))
     (root / "caption.txt").write_text(plan.caption_and_hashtags)

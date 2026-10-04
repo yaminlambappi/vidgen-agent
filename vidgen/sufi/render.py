@@ -102,10 +102,20 @@ def write_tone_voice(path: str, seconds: int) -> None:
     ])
 
 
-def cloud_tts(text: str, path: str) -> None:
+JOURNEY_VOICE = "en-US-Journey-D"
+NEURAL_VOICE = "en-US-Neural2-D"
+
+
+def _voice_unavailable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    if any(k in msg for k in ("429", "503", "timeout", "timed out", "resource_exhausted")):
+        return False
+    return any(k in msg for k in ("voice", "not found", "invalid", "unrecognized", "400", "journey"))
+
+
+def _synthesize(text: str, path: str, voice_name: str) -> None:
     from google.cloud import texttospeech
     client = texttospeech.TextToSpeechClient()
-    voice_name = settings.TTS_VOICE
     lang = "bn-IN" if voice_name.startswith("bn-") else "en-US"
     resp = client.synthesize_speech(
         input=texttospeech.SynthesisInput(text=text),
@@ -113,20 +123,36 @@ def cloud_tts(text: str, path: str) -> None:
         audio_config=texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
             sample_rate_hertz=48000,
-            speaking_rate=0.9,
-            pitch=-1.5,
+            speaking_rate=0.88,
+            pitch=-2.0,
         ),
     )
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_bytes(resp.audio_content)
 
 
+def cloud_tts(text: str, path: str, voice_name: str = JOURNEY_VOICE, ledger=None) -> str:
+    """Deep, slow Journey voice. Neural2-D is used only when Journey is rejected."""
+    try:
+        _synthesize(text, path, voice_name)
+        return voice_name
+    except Exception as exc:
+        if voice_name == NEURAL_VOICE or not _voice_unavailable(exc):
+            raise
+        if ledger is not None:
+            ledger.charge("tts")
+        _synthesize(text, path, NEURAL_VOICE)
+        return NEURAL_VOICE
+
+
 def mux(video: str, voice: str, bed: str, dst: str, seconds: int) -> None:
     """Voice in front, bed underneath, picture held to the exact master length."""
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
     filt = (
-        f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},asetpts=PTS-STARTPTS,volume=1.0[v];"
-        f"[2:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},asetpts=PTS-STARTPTS,volume=0.12[b];"
+        f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},"
+        f"asetpts=PTS-STARTPTS,aecho=0.8:0.88:60:0.4,volume=1.0[v];"
+        f"[2:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},"
+        f"asetpts=PTS-STARTPTS,volume=0.12[b];"
         "[v][b]amix=inputs=2:duration=first:normalize=0[a]"
     )
     _run([

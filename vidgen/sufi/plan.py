@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field
 REQUIRED_TAGS = ("#Sufism", "#SpiritualReminders", "#Tasawwuf", "#SchoolOfSufi")
 WORDS_PER_SECOND = 2.1
 AESTHETIC = (
-    "Vertical 9:16, serene Sufi atmosphere, warm candlelight, slow gentle motion, "
-    "no on-screen text, no logos, no watermarks."
+    "Volumetric light rays piercing soft atmosphere, golden hour lighting, "
+    "subtle floating dust particles, sacred geometric aesthetic, 8k cinematic slow motion, "
+    "vertical 9:16, no text, no watermarks, no logos, ultra peaceful Sufi mood."
 )
 
 
