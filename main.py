@@ -1,4 +1,4 @@
-"""School of Sufi — POST /generate turns one reflection into a 30s or 60s short."""
+"""School of Sufi — POST /generate turns one reflection into a 30-second munajat."""
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -7,6 +7,7 @@ from vidgen.sufi.engine import generate
 from vidgen.sufi.ledger import CostGuardTripped
 from vidgen.sufi.plan import PlanError
 from vidgen.sufi.publish import PublishError
+from vidgen.sufi.render import QualityError
 
 app = FastAPI(title="School of Sufi", version="4.0.0")
 
@@ -31,7 +32,7 @@ def health():
 def generate_short(payload: GenerateRequest):
     try:
         result = generate(payload.thought)
-    except PlanError as exc:
+    except (PlanError, QualityError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except CostGuardTripped as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc

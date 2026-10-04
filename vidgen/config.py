@@ -20,24 +20,29 @@ class Settings:
 
     GEMINI_MODEL = os.getenv("GEMINI_MODEL") or os.getenv("DIRECTOR_MODEL", "gemini-2.5-flash")
     VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-generate-001")
-    TTS_VOICE = os.getenv("TTS_VOICE", "en-US-Neural2-D")
+    # Default only. Intimacy is judged on the synthesized audio, not on this id.
+    TTS_VOICE = os.getenv("TTS_VOICE", "bn-IN-Wavenet-D")
+    TTS_LANGUAGE = os.getenv("TTS_LANGUAGE", "bn-IN")
+    TTS_SPEAKING_RATE = float(os.getenv("TTS_SPEAKING_RATE", "0.72"))
+    TTS_PITCH = float(os.getenv("TTS_PITCH", "-6.0"))
+    TTS_MAWLA_BREAK_MS = int(os.getenv("TTS_MAWLA_BREAK_MS", "70"))
 
     VIDGEN_WORK_ROOT = Path(os.getenv("VIDGEN_WORK_ROOT", "/tmp/vidgen"))
 
-    # Veo 3.1 text-to-video accepts only these lengths. The Sufi assembler
-    # generates at VEO_NATIVE_SECONDS and holds each take to its slot.
+    # Veo 3.1 text-to-video accepts only these lengths. Each Sufi shot is
+    # generated at 6 seconds and trimmed from the first frame to 5.
     VEO_VALID_DURATIONS = (4, 6, 8)
-    VEO_NATIVE_SECONDS = 8
+    VEO_NATIVE_SECONDS = 6
     VEO_TIMEOUT_SECONDS = int(os.getenv("VEO_TIMEOUT_SECONDS", "1800"))
 
     WIDTH = 1080
     HEIGHT = 1920
     FPS = 24
 
-    # A 30s short is 4–6 Veo calls. A 60s short keeps the same 5–8s pace, about 10 calls.
+    # Six takes plus one reshoot each. Plan, critic, and two vision passes share the Gemini ceiling.
     MAX_VEO_CALLS = int(os.getenv("MAX_VEO_CALLS", "12"))
-    MAX_TTS_CALLS = int(os.getenv("MAX_TTS_CALLS", "2"))
-    MAX_GEMINI_CALLS = int(os.getenv("MAX_GEMINI_CALLS", "2"))
+    MAX_TTS_CALLS = int(os.getenv("MAX_TTS_CALLS", "8"))
+    MAX_GEMINI_CALLS = int(os.getenv("MAX_GEMINI_CALLS", "6"))
 
     VIDGEN_MAX_RETRIES = int(os.getenv("VIDGEN_MAX_RETRIES", "5"))
     VIDGEN_INITIAL_BACKOFF_SECONDS = float(os.getenv("VIDGEN_INITIAL_BACKOFF_SECONDS", "2.0"))
