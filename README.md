@@ -4,7 +4,7 @@ One reflection in. One vertical short out.
 
 `POST /generate` accepts a single field, `thought`. The engine writes a 30-second short for a brief reflection and a 60-second short for a longer one, then uploads it when YouTube or a social webhook is configured.
 
-Veo 3.1 can only generate 4, 6, or 8 second clips. Each picture is generated at 8 seconds and held to an exact slot: 15+15 for a 30-second short, or 30+30 for a 60-second short. The slots always add up to the master length.
+Veo 3.1 can only generate 4, 6, or 8 second clips. A 30-second short uses 4 to 6 moving shots of about 5 to 8 seconds. A 60-second short keeps that pace. The slots always add up to the master length. Captions are burned in. The finished file is stored at `sufi/{job_id}/final_short.mp4`.
 
 ## Run
 
@@ -34,4 +34,4 @@ A target that is not configured is skipped. A target that is configured and fail
 
 ## Cost ceilings
 
-`MAX_VEO_CALLS` (3), `MAX_TTS_CALLS` (2), and `MAX_GEMINI_CALLS` (2). The job stops before a call that would pass the ceiling.
+`MAX_VEO_CALLS` (12), `MAX_TTS_CALLS` (2), and `MAX_GEMINI_CALLS` (2). The job stops before a call that would pass the ceiling. A 30-second short spends 4 to 6 of the Veo calls.

@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 from vidgen.config import settings
 from vidgen.sufi.ledger import Ledger
-from vidgen.sufi.plan import PlanError, SufiPlan, choose_duration, offline_plan, parse_plan, system_prompt, user_prompt
+from vidgen.sufi.plan import (
+    PlanError, SufiPlan, choose_duration, offline_plan, parse_plan,
+    prompt_count_for, system_prompt, user_prompt,
+)
 from vidgen.sufi.publish import PublishError, publish_video
 from vidgen.sufi.render import (
     assert_reel,
@@ -17,6 +20,7 @@ from vidgen.sufi.render import (
     concat_video,
     fit_slot,
     mux,
+    write_captions,
     write_drone,
     write_plate,
     write_tone_voice,
@@ -62,7 +66,7 @@ def _gemini_text(thought: str, duration: int, prompt_count: int, correction: str
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt(duration, prompt_count),
                 temperature=0.7,
-                max_output_tokens=2048,
+                max_output_tokens=4096,
                 response_mime_type="application/json",
             ),
         )
@@ -75,7 +79,7 @@ def _gemini_text(thought: str, duration: int, prompt_count: int, correction: str
 
 
 def _write_plan(thought: str, duration: int, ledger: Ledger, llm) -> tuple[SufiPlan, str]:
-    prompt_count = 2
+    prompt_count = prompt_count_for(duration)
     if llm is not None:
         ledger.charge("gemini")
         return parse_plan(llm(thought, duration, prompt_count), duration), "llm"
@@ -160,8 +164,10 @@ def generate(thought: str, *, llm=None, video_gen=None, tts_fn=None, publish: bo
     write_drone(str(bed), plan.duration_seconds)
     picture = root / "picture.mp4"
     final = root / "short.mp4"
+    captions = root / "captions.ass"
     concat_video(slot_paths, str(picture))
-    mux(str(picture), str(voice_path), str(bed), str(final), plan.duration_seconds)
+    write_captions(plan.script_text, plan.duration_seconds, str(captions))
+    mux(str(picture), str(voice_path), str(bed), str(final), plan.duration_seconds, str(captions))
     info = assert_reel(str(final), plan.duration_seconds)
     from vidgen.providers import get_storage_provider
     gcs_video_uri = get_storage_provider().upload(str(final), f"sufi/{job_id}/final_short.mp4")

@@ -10,9 +10,8 @@ from pydantic import BaseModel, Field
 REQUIRED_TAGS = ("#Sufism", "#SpiritualReminders", "#Tasawwuf", "#SchoolOfSufi")
 WORDS_PER_SECOND = 2.1
 AESTHETIC = (
-    "Volumetric light rays piercing soft atmosphere, golden hour lighting, "
-    "subtle floating dust particles, sacred geometric aesthetic, 8k cinematic slow motion, "
-    "vertical 9:16, no text, no watermarks, no logos, ultra peaceful Sufi mood."
+    "Cinematic 8k, dark atmospheric Sufi aesthetic, intense volumetric lighting, "
+    "ultra slow motion, wajd atmosphere, vertical 9:16, no text, no watermarks"
 )
 
 
@@ -45,39 +44,71 @@ def speech_seconds(text: str) -> float:
     return words / WORDS_PER_SECOND
 
 
-def slot_durations(total: int, count: int) -> list[int]:
-    """Split a 30s or 60s master into 2 or 3 integer slots that sum to the total.
+MOTIONS = (
+    "Slow camera pan across a deep indigo night as swirling mist hides a lone seeker",
+    "Macro drift through glowing embers while light particles whirl in the dark",
+    "Slow dolly toward stars reflected on black water, mist moving over the surface",
+    "Gentle crane rise as volumetric rays pierce an indigo sky above a waiting silhouette",
+    "Tracking drift past a low fire, sparks turning like a whirling hem of light",
+    "Slow tilt through darkness until one shaft of light finds a bowed figure",
+)
 
-    30 with 2 prompts is 15+15. 60 with 2 prompts is 30+30.
-    Remainder seconds are handed out one at a time, so the sum cannot come up short.
+_MOTION_TOKENS = (
+    "pan", "dolly", "splash", "tracking", "tilt", "crane", "drift",
+    "macro", "slow-motion", "slow motion", "sweep", "camera",
+)
+
+
+def prompt_count_for(duration: int) -> int:
+    """30s asks for 6 pictures at 5s. 60s keeps a short pace with 10 pictures."""
+    return 6 if duration == 30 else 10
+
+
+def _allowed_counts(total: int) -> range:
+    if total == 30:
+        return range(4, 7)
+    return range(8, 13)
+
+
+def slot_durations(total: int, count: int) -> list[int]:
+    """Split a 30s or 60s master into short integer slots that sum to the total.
+
+    A 30s film uses 4, 5, or 6 pictures (about 5–8s each). A 60s film uses
+    8–12 pictures at the same pace. Remainder seconds are handed out one at a
+    time, so the sum cannot come up short.
     """
     if total not in (30, 60):
         raise PlanError(f"duration must be 30 or 60, got {total}")
-    if count not in (2, 3):
-        raise PlanError(f"a short uses 2 or 3 pictures, got {count}")
+    if count not in _allowed_counts(total):
+        raise PlanError(f"a {total}s short cannot use {count} pictures")
     base, rem = divmod(total, count)
     slots = [base + (1 if i < rem else 0) for i in range(count)]
-    if sum(slots) != total or any(s <= 0 for s in slots):
-        raise PlanError(f"slot split failed for {total}s x {count}")
+    if sum(slots) != total or any(s < 5 or s > 8 for s in slots):
+        raise PlanError(f"slot split failed for {total}s x {count}: {slots}")
     return slots
 
 
 def system_prompt(duration: int, prompt_count: int) -> str:
     words = word_budget(duration)
     return (
-        "You are the writer for the School of Sufi channel. "
-        "Turn one personal reflection into a short video plan. "
-        "Tone: quiet, respectful, spiritually uplifting. "
-        "Rooted in tasawwuf: sincerity (ikhlas) and remembrance (dhikr). "
-        "Do not preach. Do not attack other traditions. "
-        "Do not invent quotations from scripture. Do not sell anything. "
+        "You are not a teacher or preacher. "
+        "You are a humble Sufi Ashiq, in the spirit of the poetry sung by Abida Parveen, Amir Khusrau, and Rumi. "
+        "You do NOT give advice or tell people what to do. "
+        "You speak directly to Allah (Maula, Ya Rabb, Ya Lateef) in deep longing, secrecy, awe, and total surrender. "
+        "The listener is overhearing a secret conversation, a munajat, not a lesson. "
+        "Speak of divine attributes, secret longing (israr), tears of devotion, light over darkness, "
+        "seeking Allah's glance (nazar), and total helplessness before His majesty. "
+        "Language: poetic, rhythmic, intimate English with a few Urdu-transliterated whispers. "
+        "No commands to the audience. No explanations. No selling. Do not invent quotations from scripture. "
         "Return only JSON with keys script_text, veo_prompts, caption_and_hashtags. "
-        "script_text is spoken voiceover: plain sentences, no stage directions, no speaker labels. "
-        f"It must be readable aloud in about {duration} seconds at a slow pace, about {words} words, and no more. "
-        f"veo_prompts is an array of exactly {prompt_count} strings. "
-        "Each describes one peaceful moving image: geometry, candlelight, water, a manuscript, a quiet courtyard, dusk. "
-        "No on-screen writing, no logos, no violence. "
-        "caption_and_hashtags is the social caption and must include "
+        "script_text is the whisper itself: no stage directions, no speaker labels. "
+        f"It must be readable aloud in about {duration} seconds, about {words} words, and no more. "
+        f"veo_prompts is an array of exactly {prompt_count} strings, each one moving shot of about 5 seconds. "
+        "Show deep indigo night, swirling mist, glowing embers, rays piercing darkness, "
+        "stars on dark water, a lone seeker in longing, whirling particles of light. "
+        "Name a camera move: pan, dolly, tilt, crane, tracking drift, or macro. "
+        "No on-screen writing, no logos, no violence, no crowd. "
+        "caption_and_hashtags is the quiet post text and must include "
         "#Sufism #SpiritualReminders #Tasawwuf #SchoolOfSufi."
     )
 
@@ -85,8 +116,8 @@ def system_prompt(duration: int, prompt_count: int) -> str:
 def user_prompt(thought: str, duration: int, prompt_count: int) -> str:
     return (
         f"Reflection:\n{thought.strip()}\n\n"
-        f"Write the {duration}-second School of Sufi short. "
-        f"Use exactly {prompt_count} visual prompts."
+        f"Turn this into a {duration}-second secret whispered to Allah. "
+        f"Use exactly {prompt_count} moving visual prompts. Do not advise the listener."
     )
 
 
@@ -119,11 +150,13 @@ def _ensure_tags(caption: str) -> str:
     return text
 
 
-def _lock_prompt(prompt: str) -> str:
+def _lock_prompt(prompt: str, index: int) -> str:
     body = " ".join((prompt or "").split())
-    if AESTHETIC.lower() in body.lower():
-        return body
-    return f"{body} {AESTHETIC}"
+    if not any(token in body.lower() for token in _MOTION_TOKENS):
+        body = f"{MOTIONS[index % len(MOTIONS)]}. {body}"
+    if AESTHETIC.lower() not in body.lower():
+        body = f"{body} {AESTHETIC}"
+    return body
 
 
 def parse_plan(payload: str | dict, duration: int) -> SufiPlan:
@@ -134,11 +167,14 @@ def parse_plan(payload: str | dict, duration: int) -> SufiPlan:
     prompts = data.get("veo_prompts") or []
     if isinstance(prompts, str):
         prompts = [prompts]
-    prompts = [_lock_prompt(str(p)) for p in prompts if str(p).strip()]
-    if len(prompts) > 3:
-        prompts = prompts[:3]
-    if len(prompts) < 2:
-        raise PlanError("veo_prompts must contain 2 or 3 pictures")
+    prompts = [_lock_prompt(str(p), i) for i, p in enumerate(prompts) if str(p).strip()]
+    allowed = _allowed_counts(duration)
+    if len(prompts) > allowed.stop - 1:
+        prompts = prompts[: allowed.stop - 1]
+    if len(prompts) not in allowed:
+        raise PlanError(
+            f"veo_prompts must contain {allowed.start} to {allowed.stop - 1} moving pictures"
+        )
     if speech_seconds(script) > duration + 1:
         raise PlanError(
             f"script is {speech_seconds(script):.0f}s of speech for a {duration}s film"
@@ -157,21 +193,32 @@ def offline_plan(thought: str, duration: int) -> SufiPlan:
     """Used only when generation is not in production. The live path calls Gemini."""
     core = " ".join((thought or "").split())
     script = (
-        f"{core.rstrip('.')}. "
-        "Sincerity is quiet work. Remembrance is not a performance. "
-        "Let the heart return, without hurry, to what is true."
+        f"Ya Rabb, {core.rstrip('.')}. "
+        "Maula, this secret is only for You. "
+        "Ya Lateef, I have nothing but this longing and these quiet tears. "
+        "If You glance once, the dark itself becomes light."
     )
     budget = word_budget(duration)
     words = script.split()
     if len(words) > budget:
         script = " ".join(words[:budget])
+    scenes = (
+        "indigo night and a lone silhouette in longing",
+        "swirling mist over dark water holding stars",
+        "glowing embers in an empty stone shrine",
+        "volumetric rays piercing total darkness",
+        "whirling motes of light around a bowed figure",
+        "a low fire reflected in black water",
+        "mist crossing an empty courtyard at night",
+        "one lamp surviving inside a dark arch",
+        "sparks rising like a slow whirling hem",
+        "starlight trembling on a still pool",
+    )
+    count = prompt_count_for(duration)
     return parse_plan(
         {
             "script_text": script,
-            "veo_prompts": [
-                "Serene Islamic geometric tilework, warm candle light, subtle particle motion, golden hour, slow motion",
-                "Calm river at twilight, illuminated manuscript art style, peaceful, atmospheric",
-            ],
+            "veo_prompts": [scenes[i % len(scenes)] for i in range(count)],
             "caption_and_hashtags": script,
         },
         duration,

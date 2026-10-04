@@ -123,8 +123,8 @@ def _synthesize(text: str, path: str, voice_name: str) -> None:
         audio_config=texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
             sample_rate_hertz=48000,
-            speaking_rate=0.88,
-            pitch=-2.0,
+            speaking_rate=0.85,
+            pitch=-2.5,
         ),
     )
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -145,21 +145,94 @@ def cloud_tts(text: str, path: str, voice_name: str = JOURNEY_VOICE, ledger=None
         return NEURAL_VOICE
 
 
-def mux(video: str, voice: str, bed: str, dst: str, seconds: int) -> None:
-    """Voice in front, bed underneath, picture held to the exact master length."""
+def _ass_time(seconds: float) -> str:
+    cs = max(0, int(round(seconds * 100)))
+    hours, cs = divmod(cs, 360_000)
+    minutes, cs = divmod(cs, 6_000)
+    secs, cs = divmod(cs, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
+
+
+def write_captions(script: str, duration: int, path: str, words_per_cue: int = 3) -> str:
+    """A few whispered lines, each fading in, timed across the whole master."""
+    words = [w for w in (script or "").split() if w]
+    if not words:
+        words = ["..."]
+    groups = [words[i:i + words_per_cue] for i in range(0, len(words), words_per_cue)]
+    total = len(words)
+    font = _caption_font()
+    cursor = 0.0
+    events = []
+    for index, group in enumerate(groups):
+        if index == len(groups) - 1:
+            end = float(duration)
+        else:
+            end = duration * (sum(len(g) for g in groups[: index + 1]) / total)
+        text = " ".join(group).replace("{", "(").replace("}", ")")
+        events.append(
+            f"Dialogue: 0,{_ass_time(cursor)},{_ass_time(end)},Whisper,,0,0,0,,{{\\fad(700,280)}}{text}"
+        )
+        cursor = end
+    body = "\n".join([
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {settings.WIDTH}",
+        f"PlayResY: {settings.HEIGHT}",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Whisper,{font},46,&H00FFFFFF,&H000000FF,&H00101010,&H80000000,"
+        "0,1,0,0,100,100,1,0,1,1,1,2,80,80,180,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        *events,
+        "",
+    ])
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(body, encoding="utf-8")
+    return path
+
+
+def _caption_font() -> str:
+    preferred = ("Noto Sans", "Montserrat", "Arial", "Liberation Sans", "DejaVu Sans", "Inter")
+    try:
+        listed = subprocess.run(
+            ["fc-list", ":family"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=10, check=False,
+        ).stdout.lower()
+    except Exception:
+        listed = ""
+    for name in preferred:
+        if name.lower() in listed:
+            return name
+    return "Liberation Sans"
+
+
+def _filter_path(path: str) -> str:
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'")
+
+
+def mux(video: str, voice: str, bed: str, dst: str, seconds: int, captions: str) -> None:
+    """A whispered prayer in an empty shrine, drone 20 dB under it, captions burned."""
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    escaped = _filter_path(captions)
     filt = (
+        f"[0:v]ass='{escaped}'[vid];"
         f"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},"
-        f"asetpts=PTS-STARTPTS,aecho=0.8:0.88:60:0.4,volume=1.0[v];"
+        f"asetpts=PTS-STARTPTS,aecho=0.8:0.88:50:0.4,volume=1.0[v];"
         f"[2:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=0:{seconds},"
-        f"asetpts=PTS-STARTPTS,volume=0.12[b];"
+        f"asetpts=PTS-STARTPTS,volume=-20dB[b];"
         "[v][b]amix=inputs=2:duration=first:normalize=0[a]"
     )
     _run([
         ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
         "-i", video, "-i", voice, "-i", bed,
         "-filter_complex", filt,
-        "-map", "0:v:0", "-map", "[a]",
+        "-map", "[vid]", "-map", "[a]",
         "-t", str(seconds),
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", dst,

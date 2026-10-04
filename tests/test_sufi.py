@@ -14,7 +14,12 @@ from vidgen.sufi.render import assert_reel, write_plate
 
 class TestDuration(unittest.TestCase):
     def test_slots_sum_to_the_master(self):
-        cases = [(30, 2, [15, 15]), (60, 2, [30, 30]), (30, 3, [10, 10, 10]), (60, 3, [20, 20, 20])]
+        cases = [
+            (30, 5, [6, 6, 6, 6, 6]),
+            (30, 4, [8, 8, 7, 7]),
+            (30, 6, [5, 5, 5, 5, 5, 5]),
+            (60, 10, [6, 6, 6, 6, 6, 6, 6, 6, 6, 6]),
+        ]
         for total, count, expected in cases:
             slots = slot_durations(total, count)
             self.assertEqual(slots, expected)
@@ -32,15 +37,22 @@ class TestPlan(unittest.TestCase):
         plan = parse_plan(
             {
                 "script_text": "The heart grows quiet when remembrance is sincere and unhurried today.",
-                "veo_prompts": ["Candle over geometric tile.", "A river at dusk."],
+                "veo_prompts": [
+                    "Candle over geometric tile.",
+                    "A river at dusk.",
+                    "A quiet courtyard.",
+                    "An open manuscript.",
+                    "A dome in warm light.",
+                ],
                 "caption_and_hashtags": "Return to sincerity.",
             },
             30,
         )
         self.assertIn("#SchoolOfSufi", plan.caption_and_hashtags)
         self.assertIn("#Tasawwuf", plan.caption_and_hashtags)
-        self.assertEqual(plan.slots, [15, 15])
+        self.assertEqual(plan.slots, [6, 6, 6, 6, 6])
         self.assertEqual(sum(plan.slots), 30)
+        self.assertTrue(all("camera" in p.lower() or "pan" in p.lower() or "splash" in p.lower() or "dolly" in p.lower() or "tilt" in p.lower() or "crane" in p.lower() or "drift" in p.lower() or "macro" in p.lower() for p in plan.veo_prompts))
 
     def test_one_prompt_is_rejected(self):
         with self.assertRaises(PlanError):
@@ -96,10 +108,12 @@ class TestReel(unittest.TestCase):
              patch.object(settings, "SOCIAL_WEBHOOK_URL", ""):
             result = generate(thought, publish=True)
         self.assertEqual(result.duration_seconds, 30)
-        self.assertEqual(result.slots, [15, 15])
+        self.assertEqual(result.slots, [5, 5, 5, 5, 5, 5])
         self.assertEqual(sum(result.slots), result.duration_seconds)
         self.assertEqual(result.plan_source, "offline_draft")
-        self.assertEqual(result.ledger["veo"], 2)
+        self.assertEqual(result.ledger["veo"], 6)
+        self.assertIn("Ya Rabb", result.script_text)
+        self.assertTrue(result.gcs_video_uri.startswith("gs://"))
         self.assertEqual(result.ledger["tts"], 1)
         self.assertEqual(result.publish["youtube"]["status"], "skipped")
         info = assert_reel(result.video_path, 30)

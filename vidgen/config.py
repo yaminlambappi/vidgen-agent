@@ -34,8 +34,8 @@ class Settings:
     HEIGHT = 1920
     FPS = 24
 
-    # One short is 2 or 3 Veo calls, one voice pass, and at most two Gemini writes.
-    MAX_VEO_CALLS = int(os.getenv("MAX_VEO_CALLS", "3"))
+    # A 30s short is 4–6 Veo calls. A 60s short keeps the same 5–8s pace, about 10 calls.
+    MAX_VEO_CALLS = int(os.getenv("MAX_VEO_CALLS", "12"))
     MAX_TTS_CALLS = int(os.getenv("MAX_TTS_CALLS", "2"))
     MAX_GEMINI_CALLS = int(os.getenv("MAX_GEMINI_CALLS", "2"))
 
